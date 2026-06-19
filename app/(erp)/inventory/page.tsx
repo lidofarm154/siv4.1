@@ -4,11 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import {
-  Package, Plus, Search, Edit, Trash2, AlertTriangle,
-  BarChart3, Boxes, TrendingDown, RefreshCw, X
-} from 'lucide-react';
-import type { Product, Category, Brand } from '@/lib/types';
+import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as AlertTriangle, ChartBar as BarChart3, Boxes, TrendingDown, RefreshCw, X, Warehouse } from 'lucide-react';
+import type { Product, Category, Brand, Warehouse as WarehouseType } from '@/lib/types';
 
 interface ProductWithStock extends Omit<Product, 'category' | 'brand'> {
   total_stock?: number;
@@ -20,6 +17,7 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<ProductWithStock[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [warehouses, setWarehouses] = useState<WarehouseType[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
@@ -33,11 +31,12 @@ export default function InventoryPage() {
 
   async function loadData() {
     setLoading(true);
-    const [prodRes, catRes, brandRes, invRes] = await Promise.all([
+    const [prodRes, catRes, brandRes, invRes, whRes] = await Promise.all([
       supabase.from('products').select('*, category:categories(name), brand:brands(name)').order('created_at', { ascending: false }),
       supabase.from('categories').select('*').eq('is_active', true),
       supabase.from('brands').select('*').eq('is_active', true),
       supabase.from('inventory_items').select('product_id, quantity_on_hand'),
+      supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
     ]);
 
     const stockMap: Record<string, number> = {};
@@ -53,6 +52,7 @@ export default function InventoryPage() {
     setProducts(prods);
     setCategories(catRes.data || []);
     setBrands(brandRes.data || []);
+    setWarehouses(whRes.data || []);
 
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
@@ -230,10 +230,10 @@ export default function InventoryPage() {
       </div>
 
       {showAddModal && (
-        <ProductModal categories={categories} brands={brands} onClose={() => setShowAddModal(false)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} onClose={() => setShowAddModal(false)} onSaved={loadData} />
       )}
       {editingProduct && (
-        <ProductModal categories={categories} brands={brands} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={loadData} />
       )}
       {deletingProduct && (
         <DeleteConfirmModal product={deletingProduct} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
@@ -242,9 +242,10 @@ export default function InventoryPage() {
   );
 }
 
-function ProductModal({ categories, brands, product, onClose, onSaved }: {
+function ProductModal({ categories, brands, warehouses, product, onClose, onSaved }: {
   categories: Category[];
   brands: Brand[];
+  warehouses: WarehouseType[];
   product?: ProductWithStock | null;
   onClose: () => void;
   onSaved: () => void;
@@ -262,6 +263,9 @@ function ProductModal({ categories, brands, product, onClose, onSaved }: {
     description: product?.description || '',
     is_active: product?.is_active ?? true,
   });
+  const [stockByWarehouse, setStockByWarehouse] = useState<Record<string, string>>(
+    warehouses.reduce((acc, w) => ({ ...acc, [w.id]: '0' }), {})
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -283,19 +287,57 @@ function ProductModal({ categories, brands, product, onClose, onSaved }: {
       is_active: form.is_active,
     };
 
-    const { error } = isEdit
-      ? await supabase.from('products').update(data).eq('id', product!.id)
-      : await supabase.from('products').insert(data);
+    let productId = product?.id;
 
-    if (error) {
-      setError(error.message);
+    try {
+      if (isEdit) {
+        const { error } = await supabase.from('products').update(data).eq('id', product!.id);
+        if (error) throw error;
+      } else {
+        const { data: newProduct, error } = await supabase.from('products').insert(data).select('id').single();
+        if (error) throw error;
+        productId = newProduct.id;
+      }
+
+      // Handle warehouse stock allocation for new products
+      if (!isEdit && productId) {
+        const defaultWarehouse = warehouses.find(w => w.is_default);
+
+        for (const [warehouseId, qty] of Object.entries(stockByWarehouse)) {
+          const quantity = Number(qty);
+          if (quantity > 0) {
+            // Create inventory item
+            await supabase.from('inventory_items').insert({
+              tenant_id: '00000000-0000-0000-0000-000000000001',
+              product_id: productId,
+              warehouse_id: warehouseId,
+              quantity_on_hand: quantity,
+            });
+
+            // Create stock movement
+            await supabase.from('stock_movements').insert({
+              tenant_id: '00000000-0000-0000-0000-000000000001',
+              product_id: productId,
+              warehouse_id: warehouseId,
+              movement_type: 'opening',
+              quantity: quantity,
+              unit_cost: Number(form.cost_price),
+              reference_type: 'product_creation',
+              reference_id: productId,
+              notes: 'Initial stock on product creation',
+            });
+          }
+        }
+      }
+
+      toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
       setSaving(false);
-      return;
     }
-
-    toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
-    onSaved();
-    onClose();
   }
 
   return (
@@ -353,6 +395,31 @@ function ProductModal({ categories, brands, product, onClose, onSaved }: {
             <label className="block text-xs font-medium mb-1">Min Stock Level</label>
             <input type="number" min="0" value={form.min_stock_level} onChange={e => setForm({ ...form, min_stock_level: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
           </div>
+
+          {!isEdit && (
+            <div className="border-t border-border pt-4 mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Warehouse className="w-4 h-4 text-muted-foreground" />
+                <label className="text-xs font-medium">Initial Stock by Warehouse</label>
+              </div>
+              <div className="space-y-2">
+                {warehouses.map(wh => (
+                  <div key={wh.id} className="flex items-center justify-between p-2 bg-muted/30 rounded-lg">
+                    <span className="text-sm">{wh.name} {wh.is_default && <span className="text-xs text-blue-600">(Default)</span>}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={stockByWarehouse[wh.id] || '0'}
+                      onChange={e => setStockByWarehouse({ ...stockByWarehouse, [wh.id]: e.target.value })}
+                      className="w-24 border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      placeholder="0"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-medium mb-1">Description</label>
             <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />

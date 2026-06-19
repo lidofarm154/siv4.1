@@ -4,28 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import {
-  LayoutDashboard,
-  Package,
-  ShoppingCart,
-  ShoppingBag,
-  Users,
-  FolderKanban,
-  Truck,
-  Calculator,
-  Store,
-  UserRound,
-  BarChart3,
-  Settings,
-  Building2,
-  ChevronDown,
-  ChevronRight,
-  FileText,
-  Receipt,
-  TrendingUp,
-  Boxes,
-  Shield,
-} from 'lucide-react';
+import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, FolderKanban, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft } from 'lucide-react';
 
 interface NavItem {
   title: string;
@@ -43,6 +22,7 @@ const navItems: NavItem[] = [
     children: [
       { title: 'Products', href: '/inventory' },
       { title: 'Stock Movements', href: '/inventory/movements' },
+      { title: 'Stock Transfers', href: '/inventory/transfers' },
       { title: 'Warehouses', href: '/inventory/warehouses' },
     ],
   },
@@ -62,6 +42,7 @@ const navItems: NavItem[] = [
       { title: 'Purchase Orders', href: '/purchases' },
       { title: 'Suppliers', href: '/suppliers' },
       { title: 'GRN', href: '/purchases/grn' },
+      { title: 'Returns', href: '/purchases/returns' },
     ],
   },
   {
