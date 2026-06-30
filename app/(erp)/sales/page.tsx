@@ -440,6 +440,12 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
   const [showUnitSelector, setShowUnitSelector] = useState<number | null>(null);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [customerList, setCustomerList] = useState(customers);
+  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data) setPaymentMethods(data); });
+  }, []);
 
   function addItem() {
     setItems([...items, { product_id: '', quantity: 1, unit_price: 0, discount_percent: 0, base_quantity: 1 }]);
@@ -642,7 +648,7 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
           <div className="grid grid-cols-3 gap-4">
-            <div>
+            <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Customer *</label>
               <div className="flex gap-2">
                 <select required value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })} className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
@@ -652,20 +658,21 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
                 <button
                   type="button"
                   onClick={() => setShowAddCustomer(true)}
-                  title="Add New Customer"
-                  className="flex items-center justify-center border border-blue-500 text-blue-600 rounded-lg px-2 hover:bg-blue-50 transition shrink-0"
+                  className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-medium transition shrink-0"
                 >
-                  <UserPlus className="w-4 h-4" />
+                  <UserPlus className="w-4 h-4" /> New
                 </button>
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Invoice Date</label>
-              <input type="date" value={form.invoice_date} onChange={e => setForm({ ...form, invoice_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Due Date</label>
-              <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-medium mb-1">Invoice Date</label>
+                <input type="date" value={form.invoice_date} onChange={e => setForm({ ...form, invoice_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Due Date</label>
+                <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
             </div>
           </div>
 
@@ -813,12 +820,20 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
                       onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })}
                       className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
                     >
-                      <option value="cash">Cash</option>
-                      <option value="bank_transfer">Bank Transfer</option>
-                      <option value="card">Card (Credit/Debit)</option>
-                      <option value="mobile_banking">Mobile Banking</option>
-                      <option value="cheque">Cheque</option>
-                      <option value="other">Other</option>
+                      {paymentMethods.length > 0 ? (
+                        paymentMethods.map(pm => (
+                          <option key={pm.code} value={pm.code}>{pm.name}</option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="cash">Cash</option>
+                          <option value="bank_transfer">Bank Transfer</option>
+                          <option value="card">Card (Credit/Debit)</option>
+                          <option value="mobile_banking">Mobile Banking</option>
+                          <option value="cheque">Cheque</option>
+                          <option value="other">Other</option>
+                        </>
+                      )}
                     </select>
                   </div>
                   <div>

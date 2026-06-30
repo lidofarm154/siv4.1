@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer } from 'lucide-react';
+import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus } from 'lucide-react';
 import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod } from '@/lib/types';
 
 const statusConfig: Record<PurchaseOrderStatus, { label: string; color: string; bg: string }> = {
@@ -298,10 +298,28 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
     notes: '',
     payment_type: 'credit' as 'credit' | 'partial' | 'full',
     amount_paid: 0,
+    payment_method: 'bank_transfer' as PaymentMethod,
+    payment_reference: '',
   });
   const [items, setItems] = useState<{ product_id: string; quantity: number; unit_price: number }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [supplierList, setSupplierList] = useState(suppliers);
+  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data) setPaymentMethods(data); });
+  }, []);
+
+  async function handleAddSupplier(newSupplierId: string) {
+    const { data } = await supabase.from('suppliers').select('*').eq('id', newSupplierId).single();
+    if (data) {
+      setSupplierList([...supplierList, data as Supplier]);
+      setForm({ ...form, supplier_id: newSupplierId });
+    }
+  }
 
   function addItem() {
     setItems([...items, { product_id: '', quantity: 1, unit_price: 0 }]);
@@ -380,8 +398,9 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         reference_id: po.id,
         supplier_id: form.supplier_id,
         amount: amountPaid,
-        payment_method: 'bank_transfer',
+        payment_method: form.payment_method,
         payment_date: form.order_date,
+        reference_number: form.payment_reference || null,
         notes: form.payment_type === 'full' ? 'Full payment at order time' : 'Partial payment at order time',
       });
 
@@ -420,20 +439,31 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
           <div className="grid grid-cols-3 gap-4">
-            <div>
+            <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Supplier *</label>
-              <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
-                <option value="">Select supplier</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-              </select>
+              <div className="flex gap-2">
+                <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
+                  <option value="">Select supplier</option>
+                  {supplierList.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setShowAddSupplier(true)}
+                  className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-medium transition shrink-0"
+                >
+                  <UserPlus className="w-4 h-4" /> New
+                </button>
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Order Date</label>
-              <input type="date" value={form.order_date} onChange={e => setForm({ ...form, order_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Expected Date</label>
-              <input type="date" value={form.expected_date} onChange={e => setForm({ ...form, expected_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-medium mb-1">Order Date</label>
+                <input type="date" value={form.order_date} onChange={e => setForm({ ...form, order_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Expected Date</label>
+                <input type="date" value={form.expected_date} onChange={e => setForm({ ...form, expected_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
             </div>
           </div>
 
@@ -519,22 +549,59 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
                 <p className="text-[10px] text-muted-foreground">Pay all now</p>
               </button>
             </div>
-            {form.payment_type === 'partial' && (
-              <div className="mt-3">
-                <label className="block text-xs mb-1">Payment Amount</label>
-                <input
-                  type="number"
-                  min="0.01"
-                  max={subtotal - 0.01}
-                  step="0.01"
-                  value={form.amount_paid}
-                  onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
-                  placeholder={`Enter amount (Max: ${formatCurrency(subtotal)})`}
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Balance Due: {formatCurrency(subtotal - form.amount_paid)}
-                </p>
+            {(form.payment_type === 'partial' || form.payment_type === 'full') && (
+              <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200 space-y-3">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-green-800">Payment Method *</label>
+                    <select
+                      value={form.payment_method}
+                      onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })}
+                      className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
+                    >
+                      {paymentMethods.length > 0 ? (
+                        paymentMethods.map(pm => (
+                          <option key={pm.code} value={pm.code}>{pm.name}</option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="cash">Cash</option>
+                          <option value="bank_transfer">Bank Transfer</option>
+                          <option value="card">Card (Credit/Debit)</option>
+                          <option value="cheque">Cheque</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-green-800">Reference / Transaction ID</label>
+                    <input
+                      type="text"
+                      value={form.payment_reference}
+                      onChange={e => setForm({ ...form, payment_reference: e.target.value })}
+                      className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
+                      placeholder="e.g. Cheque #, Transaction ID"
+                    />
+                  </div>
+                </div>
+                {form.payment_type === 'partial' && (
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-green-800">Payment Amount *</label>
+                    <input
+                      type="number"
+                      min="0.01"
+                      max={subtotal - 0.01}
+                      step="0.01"
+                      value={form.amount_paid}
+                      onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
+                      className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
+                      placeholder={`Enter amount (Max: ${formatCurrency(subtotal)})`}
+                    />
+                    <p className="text-xs text-green-700 mt-1 font-medium">
+                      Balance Due After Payment: {formatCurrency(subtotal - form.amount_paid)}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -545,6 +612,13 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
               {saving ? 'Creating...' : 'Create Purchase Order'}
             </button>
           </div>
+
+          {showAddSupplier && (
+            <AddSupplierModal
+              onClose={() => setShowAddSupplier(false)}
+              onSaved={(id) => { handleAddSupplier(id); setShowAddSupplier(false); }}
+            />
+          )}
         </form>
       </div>
     </div>
@@ -798,6 +872,125 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
             <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
               {saving ? 'Recording...' : 'Record Payment'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+  const [form, setForm] = useState({
+    name: '',
+    code: `SUP-${Date.now().toString().slice(-4)}`,
+    phone: '',
+    email: '',
+    company_name: '',
+    city: '',
+    address: '',
+    credit_limit: '0',
+    credit_days: '30',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.name) { setError('Supplier name is required'); return; }
+
+    setSaving(true);
+    setError('');
+
+    const { data, error: insertError } = await supabase
+      .from('suppliers')
+      .insert({
+        name: form.name,
+        code: form.code,
+        phone: form.phone || null,
+        email: form.email || null,
+        company_name: form.company_name || null,
+        city: form.city || null,
+        address: form.address || null,
+        credit_limit: Number(form.credit_limit),
+        credit_days: Number(form.credit_days),
+        country: 'Bangladesh',
+      })
+      .select('id')
+      .single();
+
+    if (insertError) {
+      setError(insertError.message);
+      setSaving(false);
+      return;
+    }
+
+    toast({ title: 'Success', description: 'Supplier created successfully' });
+    onSaved(data.id);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ zIndex: 60 }}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold">Add New Supplier</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium mb-1">Supplier Name *</label>
+              <input
+                required
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Code</label>
+              <input
+                value={form.code}
+                onChange={e => setForm({ ...form, code: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Phone</label>
+              <input
+                value={form.phone}
+                onChange={e => setForm({ ...form, phone: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={e => setForm({ ...form, email: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">City</label>
+              <input
+                value={form.city}
+                onChange={e => setForm({ ...form, city: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Creating...' : 'Save'}
             </button>
           </div>
         </form>
