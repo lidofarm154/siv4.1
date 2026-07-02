@@ -13,6 +13,7 @@ interface CartItem {
   name: string;
   sku: string;
   sale_price: number;
+  cost_price: number;
   quantity: number;
   image_url?: string;
   inventory_item_id?: string;
@@ -146,6 +147,7 @@ export default function POSPage() {
         name: product.name,
         sku: product.sku,
         sale_price: unitPrice,
+        cost_price: unit.cost_price || product.cost_price || 0,
         quantity: 1,
         image_url: product.image_url,
         inventory_item_id: bestInv?.id,
@@ -230,6 +232,7 @@ export default function POSPage() {
         product_id: item.id,
         quantity: item.quantity,
         unit_price: item.unit_price,
+        cost_price: item.cost_price || 0,
         discount_percent: discount,
         tax_rate: 0,
         subtotal: item.quantity * item.unit_price,

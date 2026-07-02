@@ -490,6 +490,7 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
     stock_qty: number | null;
     quantity: number;
     unit_price: number;
+    cost_price: number;
     discount_percent: number;
     selected_unit?: ProductUnit;
     available_units?: ProductUnit[];
@@ -536,6 +537,7 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
       stock_qty: stock,
       quantity: 1,
       unit_price: unitPrice,
+      cost_price: defaultUnit ? (defaultUnit.cost_price || product.cost_price || 0) : (product.cost_price || 0),
       discount_percent: 0,
       selected_unit: defaultUnit,
       available_units: multiUnit ? product.units.filter((u: any) => u.is_active) : undefined,
@@ -620,6 +622,7 @@ function CreateInvoiceModal({ customers, products, onClose, onSaved }: {
       product_id: item.product_id,
       quantity: item.quantity,
       unit_price: item.unit_price,
+      cost_price: item.cost_price || 0,
       discount_percent: item.discount_percent || 0,
       tax_rate: 0,
       subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),

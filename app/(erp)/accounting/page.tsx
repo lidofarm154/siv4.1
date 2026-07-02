@@ -2,23 +2,53 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X } from 'lucide-react';
+import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import Link from 'next/link';
 import type { Account } from '@/lib/types';
+
+interface JournalLine {
+  id: string;
+  account_id: string;
+  account?: { name: string; code: string } | { name: string; code: string }[];
+  description: string;
+  debit: number;
+  credit: number;
+}
+
+interface JournalEntry {
+  id: string;
+  entry_number: string;
+  entry_date: string;
+  description: string;
+  reference_type: string;
+  total_debit: number;
+  total_credit: number;
+  lines?: JournalLine[];
+}
 
 export default function AccountingPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [monthlyData, setMonthlyData] = useState<{ month: string; income: number; expense: number }[]>([]);
+  const [recentEntries, setRecentEntries] = useState<JournalEntry[]>([]);
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
-    const { data } = await supabase.from('accounts').select('*').eq('is_active', true).order('code');
-    setAccounts(data || []);
+    const [accountsRes, entriesRes] = await Promise.all([
+      supabase.from('accounts').select('*').eq('is_active', true).order('code'),
+      supabase.from('journal_entries')
+        .select('id, entry_number, entry_date, description, reference_type, total_debit, total_credit, lines:journal_lines(id, account_id, description, debit, credit, account:accounts(name, code))')
+        .eq('is_posted', true)
+        .order('created_at', { ascending: false })
+        .limit(10),
+    ]);
+    setAccounts(accountsRes.data || []);
+    setRecentEntries((entriesRes.data as JournalEntry[]) || []);
     setLoading(false);
   }
 
@@ -199,6 +229,60 @@ export default function AccountingPage() {
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Recent Transactions */}
+      <div className="bg-white rounded-xl border border-border shadow-sm">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-foreground">Recent Journal Entries</h3>
+          <Link href="/accounting/journal" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+            View All <ExternalLink className="w-3 h-3" />
+          </Link>
+        </div>
+        <div className="max-h-[400px] overflow-y-auto">
+          {recentEntries.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">No journal entries yet</div>
+          ) : (
+            <div className="divide-y divide-border">
+              {recentEntries.map(entry => (
+                <div key={entry.id} className="p-4 hover:bg-muted/30 transition">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-muted-foreground">{entry.entry_number}</span>
+                      <span className="badge-status bg-gray-100 text-gray-600 text-[10px] capitalize">
+                        {entry.reference_type?.replace('_', ' ') || 'manual'}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{formatDate(entry.entry_date)}</span>
+                  </div>
+                  <p className="text-sm text-foreground mb-2">{entry.description || 'No description'}</p>
+                  {entry.lines && entry.lines.length > 0 && (
+                    <div className="space-y-1 text-xs">
+                      {entry.lines.map((line, idx) => {
+                        const account = Array.isArray(line.account) ? line.account[0] : line.account;
+                        return (
+                          <div key={line.id || idx} className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {Number(line.debit) > 0 ? (
+                                <ArrowUpRight className="w-3 h-3 text-green-600" />
+                              ) : (
+                                <ArrowDownLeft className="w-3 h-3 text-red-600" />
+                              )}
+                              <span className="text-muted-foreground">{account?.name || 'Account'}</span>
+                            </div>
+                            <span className={Number(line.debit) > 0 ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                              {Number(line.debit) > 0 ? `Dr. ${formatCurrency(line.debit)}` : `Cr. ${formatCurrency(line.credit)}`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
