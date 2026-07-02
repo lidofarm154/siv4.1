@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink, User, Building2 } from 'lucide-react';
+import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink, User, Building2, HandCoins, CircleCheck as CheckCircle2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Link from 'next/link';
 import type { Account } from '@/lib/types';
@@ -29,59 +29,106 @@ interface JournalEntry {
   lines?: JournalLine[];
 }
 
+interface ManualReceivablePayable {
+  id: string;
+  entry_number: string;
+  entry_date: string;
+  description: string;
+  amount: number;
+  paid_amount: number;
+  outstanding_balance: number;
+  party_name?: string;
+  party_id?: string;
+}
+
 export default function AccountingPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [monthlyData, setMonthlyData] = useState<{ month: string; income: number; expense: number }[]>([]);
   const [recentEntries, setRecentEntries] = useState<JournalEntry[]>([]);
+  const [manualReceivables, setManualReceivables] = useState<ManualReceivablePayable[]>([]);
+  const [manualPayables, setManualPayables] = useState<ManualReceivablePayable[]>([]);
+  const [showReceivablePayment, setShowReceivablePayment] = useState<ManualReceivablePayable | null>(null);
+  const [showPayablePayment, setShowPayablePayment] = useState<ManualReceivablePayable | null>(null);
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
-    const [accountsRes, entriesRes, allLinesRes] = await Promise.all([
-      supabase.from('accounts').select('*').eq('is_active', true).order('code'),
-      supabase.from('journal_entries')
-        .select('id, entry_number, entry_date, description, reference_type, total_debit, total_credit, lines:journal_lines(id, account_id, description, debit, credit, account:accounts(name, code, balance, account_type))')
-        .eq('is_posted', true)
-        .order('created_at', { ascending: false })
-        .limit(10),
-      supabase.from('journal_lines')
-        .select('journal_entry_id, account_id, debit, credit, entry_date:journal_entries(entry_date), is_posted:journal_entries(is_posted)')
-        .eq('journal_entries.is_posted', true)
-        .order('journal_entries(entry_date)', { ascending: true }),
-    ]);
-    setAccounts(accountsRes.data || []);
 
-    const entries = (entriesRes.data as JournalEntry[]) || [];
+    // Step 1: Fetch accounts
+    const { data: accountsData } = await supabase.from('accounts').select('*').eq('is_active', true).order('code');
+    setAccounts(accountsData || []);
 
-    // Build a running balance map: accountId -> cumulative balance at each entry point
-    const allLines = (allLinesRes.data as any[]) || [];
-    const entryOrder: string[] = [];
-    const entryDateMap = new Map<string, string>();
+    // Step 2: Fetch recent journal entries for display
+    const { data: entriesData } = await supabase.from('journal_entries')
+      .select('id, entry_number, entry_date, description, reference_type, total_debit, total_credit, lines:journal_lines(id, account_id, description, debit, credit, account:accounts(name, code, balance, account_type))')
+      .eq('is_posted', true)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    const entries = (entriesData as JournalEntry[]) || [];
+
+    // Step 3: Fetch ALL posted journal entries in chronological order for balance history computation
+    const { data: orderedEntries } = await supabase.from('journal_entries')
+      .select('id')
+      .eq('is_posted', true)
+      .order('entry_date', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    const orderedEntryIds = (orderedEntries || []).map(e => e.id);
+
+    // Step 4: Fetch all journal lines for those entries
+    let allLines: any[] = [];
+    if (orderedEntryIds.length > 0) {
+      // Fetch in batches to avoid URL length limits
+      const batchSize = 100;
+      for (let i = 0; i < orderedEntryIds.length; i += batchSize) {
+        const batchIds = orderedEntryIds.slice(i, i + batchSize);
+        const { data: batchLines } = await supabase.from('journal_lines')
+          .select('journal_entry_id, account_id, debit, credit')
+          .in('journal_entry_id', batchIds);
+        if (batchLines) {
+          // Sort lines by their entry's position in orderedEntryIds
+          const lineSorter = (a: any, b: any) => {
+            const idxA = orderedEntryIds.indexOf(a.journal_entry_id);
+            const idxB = orderedEntryIds.indexOf(b.journal_entry_id);
+            return idxA - idxB;
+          };
+          allLines = allLines.concat(batchLines);
+        }
+      }
+    }
+
+    // Sort all lines by their entry's chronological order
+    const entryOrderIndex = new Map<string, number>();
+    orderedEntryIds.forEach((id, idx) => entryOrderIndex.set(id, idx));
+    allLines.sort((a, b) => (entryOrderIndex.get(a.journal_entry_id) ?? 0) - (entryOrderIndex.get(b.journal_entry_id) ?? 0));
+
+    // Step 5: Group lines by entry
     const linesByEntry = new Map<string, any[]>();
     for (const l of allLines) {
       const jeId = l.journal_entry_id;
       if (!linesByEntry.has(jeId)) {
         linesByEntry.set(jeId, []);
-        entryOrder.push(jeId);
-        entryDateMap.set(jeId, l.entry_date?.entry_date || '');
       }
       linesByEntry.get(jeId)!.push(l);
     }
 
-    // Compute running balance per account up to (but not including) each entry
+    // Step 6: Compute running balance per account going through entries chronologically
     const runningBalance = new Map<string, number>();
     const balanceBeforeEntry = new Map<string, Map<string, number>>(); // entryId -> (accountId -> balance before)
     const balanceAfterEntry = new Map<string, Map<string, number>>(); // entryId -> (accountId -> balance after)
 
-    for (const jeId of entryOrder) {
+    for (const jeId of orderedEntryIds) {
+      // Snapshot balance before this entry
       const before = new Map<string, number>();
       for (const [accId, bal] of runningBalance) {
         before.set(accId, bal);
       }
       balanceBeforeEntry.set(jeId, before);
 
+      // Apply this entry's lines to running balance
       const lines = linesByEntry.get(jeId) || [];
       for (const l of lines) {
         const accId = l.account_id;
@@ -91,6 +138,7 @@ export default function AccountingPage() {
         runningBalance.set(accId, current + debit - credit);
       }
 
+      // Snapshot balance after this entry
       const after = new Map<string, number>();
       for (const [accId, bal] of runningBalance) {
         after.set(accId, bal);
@@ -98,7 +146,7 @@ export default function AccountingPage() {
       balanceAfterEntry.set(jeId, after);
     }
 
-    // Attach computed balances to each entry's lines
+    // Step 7: Attach computed balances to each recent entry's lines
     for (const entry of entries) {
       if (!entry.lines) continue;
       const afterMap = balanceAfterEntry.get(entry.id);
@@ -115,6 +163,92 @@ export default function AccountingPage() {
     }
 
     setRecentEntries(entries);
+
+    // Load manual receivables
+    const { data: receivableEntries } = await supabase.from('journal_entries')
+      .select('id, entry_number, entry_date, description, total_debit')
+      .eq('is_posted', true)
+      .eq('reference_type', 'receivable')
+      .order('entry_date', { ascending: false });
+
+    const { data: receivablePayments } = await supabase.from('payments')
+      .select('reference_id, amount')
+      .eq('reference_type', 'receivable');
+
+    const receivablePaymentsMap = new Map<string, number>();
+    (receivablePayments || []).forEach(p => {
+      const current = receivablePaymentsMap.get(p.reference_id) || 0;
+      receivablePaymentsMap.set(p.reference_id, current + Number(p.amount));
+    });
+
+    const receivablesList: ManualReceivablePayable[] = [];
+    for (const entry of (receivableEntries || [])) {
+      const paidAmount = receivablePaymentsMap.get(entry.id) || 0;
+      const outstanding = Number(entry.total_debit) - paidAmount;
+      if (outstanding > 0) {
+        // Get customer info from journal_lines -> related customer
+        const { data: lineData } = await supabase.from('journal_lines')
+          .select('description')
+          .eq('journal_entry_id', entry.id)
+          .eq('debit', 0)
+          .maybeSingle();
+
+        receivablesList.push({
+          id: entry.id,
+          entry_number: entry.entry_number,
+          entry_date: entry.entry_date,
+          description: entry.description,
+          amount: Number(entry.total_debit),
+          paid_amount: paidAmount,
+          outstanding_balance: outstanding,
+          party_name: lineData?.description?.replace('Receivable from ', '') || 'Customer',
+        });
+      }
+    }
+    setManualReceivables(receivablesList);
+
+    // Load manual payables
+    const { data: payableEntries } = await supabase.from('journal_entries')
+      .select('id, entry_number, entry_date, description, total_credit')
+      .eq('is_posted', true)
+      .eq('reference_type', 'payable')
+      .order('entry_date', { ascending: false });
+
+    const { data: payablePayments } = await supabase.from('payments')
+      .select('reference_id, amount')
+      .eq('reference_type', 'payable');
+
+    const payablePaymentsMap = new Map<string, number>();
+    (payablePayments || []).forEach(p => {
+      const current = payablePaymentsMap.get(p.reference_id) || 0;
+      payablePaymentsMap.set(p.reference_id, current + Number(p.amount));
+    });
+
+    const payablesList: ManualReceivablePayable[] = [];
+    for (const entry of (payableEntries || [])) {
+      const paidAmount = payablePaymentsMap.get(entry.id) || 0;
+      const outstanding = Number(entry.total_credit) - paidAmount;
+      if (outstanding > 0) {
+        const { data: lineData } = await supabase.from('journal_lines')
+          .select('description')
+          .eq('journal_entry_id', entry.id)
+          .eq('credit', 0)
+          .maybeSingle();
+
+        payablesList.push({
+          id: entry.id,
+          entry_number: entry.entry_number,
+          entry_date: entry.entry_date,
+          description: entry.description,
+          amount: Number(entry.total_credit),
+          paid_amount: paidAmount,
+          outstanding_balance: outstanding,
+          party_name: lineData?.description?.replace('Payable to ', '') || 'Supplier',
+        });
+      }
+    }
+    setManualPayables(payablesList);
+
     setLoading(false);
   }
 
@@ -300,6 +434,96 @@ export default function AccountingPage() {
         </div>
       </div>
 
+      {/* Manual Receivables Management */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="bg-white rounded-xl border border-border shadow-sm">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <User className="w-4 h-4 text-green-600" />
+              <h3 className="text-sm font-semibold text-foreground">Manual Receivables</h3>
+            </div>
+            <span className="text-xs text-muted-foreground">{manualReceivables.length} outstanding</span>
+          </div>
+          <div className="max-h-[300px] overflow-y-auto">
+            {manualReceivables.length === 0 ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-green-200" />
+                No outstanding manual receivables
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {manualReceivables.map(r => (
+                  <div key={r.id} className="p-3 hover:bg-muted/30 transition">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-mono text-muted-foreground">{r.entry_number}</span>
+                      <span className="text-xs text-muted-foreground">{formatDate(r.entry_date)}</span>
+                    </div>
+                    <p className="text-sm text-foreground mb-1 truncate">{r.party_name}</p>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs">
+                        <span className="text-muted-foreground">Outstanding: </span>
+                        <span className="font-bold text-red-600">{formatCurrency(r.outstanding_balance)}</span>
+                        <span className="text-muted-foreground ml-2">of {formatCurrency(r.amount)}</span>
+                      </div>
+                      <button
+                        onClick={() => setShowReceivablePayment(r)}
+                        className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 transition font-medium"
+                      >
+                        Collect
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Manual Payables Management */}
+        <div className="bg-white rounded-xl border border-border shadow-sm">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-amber-600" />
+              <h3 className="text-sm font-semibold text-foreground">Manual Payables</h3>
+            </div>
+            <span className="text-xs text-muted-foreground">{manualPayables.length} outstanding</span>
+          </div>
+          <div className="max-h-[300px] overflow-y-auto">
+            {manualPayables.length === 0 ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-amber-200" />
+                No outstanding manual payables
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {manualPayables.map(p => (
+                  <div key={p.id} className="p-3 hover:bg-muted/30 transition">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-mono text-muted-foreground">{p.entry_number}</span>
+                      <span className="text-xs text-muted-foreground">{formatDate(p.entry_date)}</span>
+                    </div>
+                    <p className="text-sm text-foreground mb-1 truncate">{p.party_name}</p>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs">
+                        <span className="text-muted-foreground">Outstanding: </span>
+                        <span className="font-bold text-amber-600">{formatCurrency(p.outstanding_balance)}</span>
+                        <span className="text-muted-foreground ml-2">of {formatCurrency(p.amount)}</span>
+                      </div>
+                      <button
+                        onClick={() => setShowPayablePayment(p)}
+                        className="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100 transition font-medium"
+                      >
+                        Pay
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Recent Transactions */}
       <div className="bg-white rounded-xl border border-border shadow-sm">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
@@ -361,6 +585,24 @@ export default function AccountingPage() {
           )}
         </div>
       </div>
+
+      {showReceivablePayment && (
+        <RecordReceivablePaymentModal
+          receivable={showReceivablePayment}
+          accounts={accounts}
+          onClose={() => setShowReceivablePayment(null)}
+          onSaved={loadData}
+        />
+      )}
+
+      {showPayablePayment && (
+        <RecordPayablePaymentModal
+          payable={showPayablePayment}
+          accounts={accounts}
+          onClose={() => setShowPayablePayment(null)}
+          onSaved={loadData}
+        />
+      )}
     </div>
   );
 }
@@ -792,5 +1034,429 @@ function RecordPayableModal({ accounts, onSaved }: { accounts: Account[]; onSave
         </div>
       )}
     </>
+  );
+}
+
+function RecordReceivablePaymentModal({
+  receivable,
+  accounts,
+  onClose,
+  onSaved
+}: {
+  receivable: ManualReceivablePayable;
+  accounts: Account[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    amount: receivable.outstanding_balance,
+    payment_date: new Date().toISOString().split('T')[0],
+    payment_method: 'cash',
+    account_id: '',
+    reference_number: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const arAccount = accounts.find(a => a.code === '1100');
+  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+
+    if (!form.account_id || form.amount <= 0) {
+      setError('Please select a cash/bank account and enter a valid amount');
+      return;
+    }
+
+    if (form.amount > receivable.outstanding_balance) {
+      setError(`Amount cannot exceed outstanding balance (${formatCurrency(receivable.outstanding_balance)})`);
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const paymentNumber = `PAY-${Date.now().toString().slice(-6)}`;
+      const amount = form.amount;
+      const desc = form.notes || `Payment received for ${receivable.entry_number}`;
+
+      // 1. Create payment record
+      const { error: payError } = await supabase.from('payments').insert({
+        payment_number: paymentNumber,
+        payment_type: 'received',
+        reference_type: 'receivable',
+        reference_id: receivable.id,
+        amount: amount,
+        payment_method: form.payment_method,
+        payment_date: form.payment_date,
+        reference_number: form.reference_number || null,
+        notes: form.notes || null,
+      });
+
+      if (payError) throw payError;
+
+      // 2. Create journal entry: DR Cash/Bank, CR Accounts Receivable
+      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
+      const { data: entry, error: entryError } = await supabase
+        .from('journal_entries')
+        .insert({
+          entry_number: entryNumber,
+          entry_date: form.payment_date,
+          description: desc,
+          reference_type: 'payment',
+          total_debit: amount,
+          total_credit: amount,
+          is_posted: true,
+        })
+        .select()
+        .single();
+
+      if (entryError) throw entryError;
+
+      if (!arAccount) throw new Error('Accounts Receivable account not found');
+
+      await supabase.from('journal_lines').insert([
+        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+        { journal_entry_id: entry.id, account_id: arAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
+      ]);
+
+      // 3. Update account balances
+      const cashAccount = accounts.find(a => a.id === form.account_id);
+      if (cashAccount) {
+        await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) + amount }).eq('id', form.account_id);
+      }
+      await supabase.from('accounts').update({ balance: (arAccount.balance || 0) - amount }).eq('id', arAccount.id);
+
+      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record payment');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <HandCoins className="w-4 h-4 text-green-600" />
+            Collect Receivable Payment
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          <div className="bg-muted/30 rounded-lg p-3 space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Receivable:</span>
+              <span className="font-mono">{receivable.entry_number}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Party:</span>
+              <span className="font-medium">{receivable.party_name}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Outstanding:</span>
+              <span className="font-bold text-red-600">{formatCurrency(receivable.outstanding_balance)}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input
+                type="number"
+                required
+                min="0.01"
+                max={receivable.outstanding_balance}
+                step="0.01"
+                value={form.amount}
+                onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Date</label>
+              <input
+                type="date"
+                value={form.payment_date}
+                onChange={e => setForm({ ...form, payment_date: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Method</label>
+              <select
+                value={form.payment_method}
+                onChange={e => setForm({ ...form, payment_method: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="card">Card</option>
+                <option value="cheque">Cheque</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Receive Into *</label>
+              <select
+                required
+                value={form.account_id}
+                onChange={e => setForm({ ...form, account_id: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">Select account</option>
+                {cashBankAccounts.map(a => (
+                  <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Reference Number</label>
+            <input
+              value={form.reference_number}
+              onChange={e => setForm({ ...form, reference_number: e.target.value })}
+              placeholder="Cheque no., Transaction ID..."
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
+            Dr. Cash/Bank &rarr; Cr. Accounts Receivable (1100)
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Record Payment'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function RecordPayablePaymentModal({
+  payable,
+  accounts,
+  onClose,
+  onSaved
+}: {
+  payable: ManualReceivablePayable;
+  accounts: Account[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    amount: payable.outstanding_balance,
+    payment_date: new Date().toISOString().split('T')[0],
+    payment_method: 'cash',
+    account_id: '',
+    reference_number: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const apAccount = accounts.find(a => a.code === '2000');
+  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+
+    if (!form.account_id || form.amount <= 0) {
+      setError('Please select a cash/bank account and enter a valid amount');
+      return;
+    }
+
+    if (form.amount > payable.outstanding_balance) {
+      setError(`Amount cannot exceed outstanding balance (${formatCurrency(payable.outstanding_balance)})`);
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const paymentNumber = `PAY-${Date.now().toString().slice(-6)}`;
+      const amount = form.amount;
+      const desc = form.notes || `Payment made for ${payable.entry_number}`;
+
+      // 1. Create payment record
+      const { error: payError } = await supabase.from('payments').insert({
+        payment_number: paymentNumber,
+        payment_type: 'made',
+        reference_type: 'payable',
+        reference_id: payable.id,
+        amount: amount,
+        payment_method: form.payment_method,
+        payment_date: form.payment_date,
+        reference_number: form.reference_number || null,
+        notes: form.notes || null,
+      });
+
+      if (payError) throw payError;
+
+      // 2. Create journal entry: DR Accounts Payable, CR Cash/Bank
+      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
+      const { data: entry, error: entryError } = await supabase
+        .from('journal_entries')
+        .insert({
+          entry_number: entryNumber,
+          entry_date: form.payment_date,
+          description: desc,
+          reference_type: 'payment',
+          total_debit: amount,
+          total_credit: amount,
+          is_posted: true,
+        })
+        .select()
+        .single();
+
+      if (entryError) throw entryError;
+
+      if (!apAccount) throw new Error('Accounts Payable account not found');
+
+      await supabase.from('journal_lines').insert([
+        { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: 0, credit: amount, sort_order: 1 },
+      ]);
+
+      // 3. Update account balances
+      const cashAccount = accounts.find(a => a.id === form.account_id);
+      if (cashAccount) {
+        await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) - amount }).eq('id', form.account_id);
+      }
+      await supabase.from('accounts').update({ balance: (apAccount.balance || 0) - amount }).eq('id', apAccount.id);
+
+      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record payment');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <HandCoins className="w-4 h-4 text-amber-600" />
+            Pay Payable
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          <div className="bg-muted/30 rounded-lg p-3 space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Payable:</span>
+              <span className="font-mono">{payable.entry_number}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Party:</span>
+              <span className="font-medium">{payable.party_name}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Outstanding:</span>
+              <span className="font-bold text-amber-600">{formatCurrency(payable.outstanding_balance)}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input
+                type="number"
+                required
+                min="0.01"
+                max={payable.outstanding_balance}
+                step="0.01"
+                value={form.amount}
+                onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Date</label>
+              <input
+                type="date"
+                value={form.payment_date}
+                onChange={e => setForm({ ...form, payment_date: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Method</label>
+              <select
+                value={form.payment_method}
+                onChange={e => setForm({ ...form, payment_method: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="card">Card</option>
+                <option value="cheque">Cheque</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Pay From *</label>
+              <select
+                required
+                value={form.account_id}
+                onChange={e => setForm({ ...form, account_id: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">Select account</option>
+                {cashBankAccounts.map(a => (
+                  <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Reference Number</label>
+            <input
+              value={form.reference_number}
+              onChange={e => setForm({ ...form, reference_number: e.target.value })}
+              placeholder="Cheque no., Transaction ID..."
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
+            Dr. Accounts Payable (2000) &rarr; Cr. Cash/Bank
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Record Payment'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
