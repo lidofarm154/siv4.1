@@ -557,20 +557,21 @@ function ReturnModal({ invoices, onClose, onSaved }: {
           .single();
 
         if (currentAccount) {
-          // For asset/expense accounts: debit increases, credit decreases
-          // For liability/equity/revenue accounts: credit increases, debit decreases
           const isDebitAccount = ['asset', 'expense'].includes(currentAccount.account_type);
           const netChange = isDebitAccount
             ? totalDebit - totalCredit
             : totalCredit - totalDebit;
 
-          await supabase
+          const { error: balanceError } = await supabase
             .from('accounts')
             .update({
               balance: (currentAccount.balance || 0) + netChange,
-              updated_at: new Date().toISOString()
             })
             .eq('id', accountId);
+
+          if (balanceError) {
+            console.error('Failed to update account balance:', balanceError);
+          }
         }
       }
 
