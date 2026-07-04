@@ -229,6 +229,8 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [availableQty, setAvailableQty] = useState(0);
+  const [productSearch, setProductSearch] = useState('');
+  const [showProductList, setShowProductList] = useState(false);
 
   useEffect(() => {
     if (form.product_id && form.from_warehouse_id) {
@@ -340,17 +342,64 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
-          <div>
+          <div className="relative">
             <label className="block text-xs font-medium mb-1">Product *</label>
-            <select
-              required
-              value={form.product_id}
-              onChange={e => setForm({ ...form, product_id: e.target.value })}
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">Select product</option>
-              {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-            </select>
+            {form.product_id && !showProductList ? (
+              <div className="flex items-center gap-2 w-full border border-blue-400 bg-blue-50 rounded-lg px-3 py-2 text-sm">
+                <span className="flex-1 font-medium text-foreground truncate">
+                  {products.find(p => p.id === form.product_id)?.name}
+                  <span className="ml-1 text-xs text-muted-foreground font-normal">({products.find(p => p.id === form.product_id)?.sku})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setForm({ ...form, product_id: '' }); setProductSearch(''); setShowProductList(true); }}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div>
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Type to search products by name or SKU..."
+                  value={productSearch}
+                  onChange={e => { setProductSearch(e.target.value); setShowProductList(true); }}
+                  onFocus={() => setShowProductList(true)}
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+                {showProductList && (
+                  <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-border rounded-xl shadow-xl max-h-52 overflow-y-auto">
+                    {(() => {
+                      const q = productSearch.toLowerCase();
+                      const filtered = products.filter(p =>
+                        !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
+                      ).slice(0, 30);
+                      if (filtered.length === 0) return (
+                        <div className="px-4 py-3 text-sm text-muted-foreground">No products found for &ldquo;{productSearch}&rdquo;</div>
+                      );
+                      return filtered.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => { setForm({ ...form, product_id: p.id }); setProductSearch(''); setShowProductList(false); }}
+                          className="w-full flex items-start gap-3 px-3 py-2.5 hover:bg-blue-50 text-left border-b border-border/50 last:border-0 transition"
+                        >
+                          <Package className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
+                            <p className="text-xs text-muted-foreground">{p.sku}{(p as any).category?.name ? ` · ${(p as any).category.name}` : ''}</p>
+                          </div>
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Hidden input for form validation */}
+            <input type="text" required value={form.product_id} onChange={() => {}} className="sr-only" />
           </div>
 
           <div className="grid grid-cols-2 gap-4">

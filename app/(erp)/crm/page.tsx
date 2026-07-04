@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Users, Plus, Search, Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye } from 'lucide-react';
+import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 
@@ -20,23 +20,34 @@ const typeConfig: Record<CustomerType, { label: string; color: string; icon: Rea
 
 export default function CRMPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerReturns, setCustomerReturns] = useState<Record<string, { count: number; total: number }>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deletingCustomer, setDeletingCustomer] = useState<Customer | null>(null);
-  const [stats, setStats] = useState({ total: 0, totalRevenue: 0, outstanding: 0, active: 0 });
+  const [stats, setStats] = useState({ total: 0, totalRevenue: 0, outstanding: 0, active: 0, totalRefunds: 0 });
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
     const { data } = await supabase.from('customers').select('*').order('total_purchases', { ascending: false });
+    const { data: returnsData } = await supabase.from('sales_returns').select('customer_id, refund_amount');
     setCustomers(data || []);
+    const returnsMap: Record<string, { count: number; total: number }> = {};
+    (returnsData || []).forEach(r => {
+      if (!r.customer_id) return;
+      if (!returnsMap[r.customer_id]) returnsMap[r.customer_id] = { count: 0, total: 0 };
+      returnsMap[r.customer_id].count++;
+      returnsMap[r.customer_id].total += r.refund_amount || 0;
+    });
+    setCustomerReturns(returnsMap);
     const totalRev = (data || []).reduce((s: number, c: Customer) => s + c.total_purchases, 0);
     const totalOut = (data || []).reduce((s: number, c: Customer) => s + c.outstanding_balance, 0);
-    setStats({ total: data?.length || 0, totalRevenue: totalRev, outstanding: totalOut, active: data?.filter((c: Customer) => c.is_active).length || 0 });
+    const totalRef = (returnsData || []).reduce((s: number, r) => s + (r.refund_amount || 0), 0);
+    setStats({ total: data?.length || 0, totalRevenue: totalRev, outstanding: totalOut, active: data?.filter((c: Customer) => c.is_active).length || 0, totalRefunds: totalRef });
     setLoading(false);
   }
 
@@ -69,12 +80,13 @@ export default function CRMPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
           { label: 'Total Customers', value: stats.total, color: 'text-blue-500' },
           { label: 'Active', value: stats.active, color: 'text-green-500' },
           { label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), color: 'text-purple-500' },
-          { label: 'Outstanding', value: formatCurrency(stats.outstanding), color: 'text-red-500' },
+          { label: 'Total Refunds', value: formatCurrency(stats.totalRefunds), color: 'text-orange-500' },
+          { label: 'Net Revenue', value: formatCurrency(stats.totalRevenue - stats.totalRefunds), color: 'text-teal-500' },
         ].map(s => (
           <div key={s.label} className="stat-card">
             <p className="text-xs text-muted-foreground">{s.label}</p>
@@ -104,6 +116,8 @@ export default function CRMPage() {
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Contact</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">City</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total Purchases</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Returns</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net Purchases</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Outstanding</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit Limit</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Actions</th>
@@ -111,11 +125,13 @@ export default function CRMPage() {
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}>{Array.from({ length: 8 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
+                <tr key={i}>{Array.from({ length: 10 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : filtered.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-12 text-center text-muted-foreground text-sm">No customers found</td></tr>
+                <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground text-sm">No customers found</td></tr>
               ) : filtered.map(c => {
                 const cfg = typeConfig[c.type] || typeConfig.retail;
+                const returns = customerReturns[c.id] || { count: 0, total: 0 };
+                const netPurchases = c.total_purchases - returns.total;
                 return (
                   <tr key={c.id} className={`hover:bg-muted/30 transition-colors ${!c.is_active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
@@ -136,6 +152,16 @@ export default function CRMPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-foreground">{c.city || '-'}</td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(c.total_purchases)}</td>
+                    <td className="px-4 py-3 text-right">
+                      {returns.count > 0 ? (
+                        <div className="flex items-center justify-end gap-1">
+                          <RotateCcw className="w-3 h-3 text-orange-500" />
+                          <span className="text-xs text-orange-600">{returns.count}</span>
+                          <span className="text-xs text-muted-foreground">({formatCurrency(returns.total)})</span>
+                        </div>
+                      ) : <span className="text-xs text-muted-foreground">-</span>}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-teal-600">{formatCurrency(netPurchases)}</td>
                     <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{c.outstanding_balance > 0 ? formatCurrency(c.outstanding_balance) : '-'}</td>
                     <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(c.credit_limit)}</td>
                     <td className="px-4 py-3 text-right">

@@ -58,6 +58,7 @@ export default function InventoryPage() {
   const [showManageModal, setShowManageModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [stats, setStats] = useState({ total: 0, lowStock: 0, outOfStock: 0, value: 0 });
+  const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string }[]>([]);
 
   useEffect(() => { loadData(); }, []);
 
@@ -80,13 +81,14 @@ export default function InventoryPage() {
       page++;
     }
 
-    const [catRes, brandRes, invRes, whRes, colorRes, sizeRes] = await Promise.all([
+    const [catRes, brandRes, invRes, whRes, colorRes, sizeRes, unitTypeRes] = await Promise.all([
       supabase.from('categories').select('*').eq('is_active', true),
       supabase.from('brands').select('*').eq('is_active', true),
       supabase.from('inventory_items').select('product_id, warehouse_id, quantity_on_hand'),
       supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
       supabase.from('product_colors').select('id, name, hex_code').order('name'),
       supabase.from('product_sizes').select('id, name').order('name'),
+      supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
     ]);
 
     const stockMap: Record<string, number> = {};
@@ -127,6 +129,7 @@ export default function InventoryPage() {
       return true;
     });
     setAllSizes(uniqueSizes);
+    setUnitTypes(unitTypeRes.data || []);
 
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
@@ -413,10 +416,10 @@ export default function InventoryPage() {
       </div>
 
       {showAddModal && (
-        <ProductModal categories={categories} brands={brands} warehouses={warehouses} onClose={() => setShowAddModal(false)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} onClose={() => setShowAddModal(false)} onSaved={loadData} />
       )}
       {editingProduct && (
-        <ProductModal categories={categories} brands={brands} warehouses={warehouses} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={loadData} />
       )}
       {deletingProduct && (
         <DeleteConfirmModal product={deletingProduct} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
@@ -425,7 +428,7 @@ export default function InventoryPage() {
         <BarcodeModal product={barcodeProduct} onClose={() => setBarcodeProduct(null)} />
       )}
       {showManageModal && (
-        <ManageCatalogModal categories={categories} brands={brands} onClose={() => setShowManageModal(false)} onSaved={loadData} />
+        <ManageCatalogModal categories={categories} brands={brands} unitTypes={unitTypes} onClose={() => setShowManageModal(false)} onSaved={loadData} />
       )}
       {showImportModal && (
         <ImportModal
@@ -441,10 +444,11 @@ export default function InventoryPage() {
   );
 }
 
-function ProductModal({ categories, brands, warehouses, product, onClose, onSaved }: {
+function ProductModal({ categories, brands, warehouses, unitTypes, product, onClose, onSaved }: {
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
+  unitTypes: { id: string; unit_name: string; unit_short: string }[];
   product?: ProductWithStock | null;
   onClose: () => void;
   onSaved: () => void;
@@ -856,31 +860,57 @@ function ProductModal({ categories, brands, warehouses, product, onClose, onSave
                     <p className="text-xs text-blue-800 flex items-start gap-2">
                       <Info className="w-4 h-4 shrink-0 mt-0.5" />
                       <span>
-                        <strong>How Multi-Unit Works:</strong> Define the different packaging units you sell this product in.
-                        The <strong>Base Unit</strong> is your smallest unit (stock is tracked in this). The <strong>Conversion Factor</strong> tells how many base units equal one of this unit.
-                        <br /><br />
-                        <strong>Example:</strong> For tiles, base unit = "Piece" (conversion=1). Sell unit = "Box" with conversion=50 means 1 Box = 50 Pieces. Price the Box at its selling price, not per piece.
+                        <strong>How Multi-Unit Works:</strong> The <strong>Base Unit</strong> is your smallest tracked unit (conversion = 1). Each other unit's <strong>Conv.</strong> value says how many base units it contains.
+                        <br /><strong>Example for tiles:</strong>
                       </span>
                     </p>
+                    <div className="mt-2 grid grid-cols-6 gap-1 text-[11px] font-medium text-blue-700 px-6">
+                      <span>Unit</span><span>Short</span><span>Conv.</span><span>Sale ৳</span><span>Cost ৳</span><span>Flag</span>
+                    </div>
+                    <div className="mt-0.5 grid grid-cols-6 gap-1 text-[11px] text-blue-800 bg-blue-100 rounded px-6 py-1">
+                      <span>Piece</span><span>pcs</span><span>1</span><span>45.00</span><span>32.00</span><span className="text-green-700 font-bold">Base</span>
+                    </div>
+                    <div className="mt-0.5 grid grid-cols-6 gap-1 text-[11px] text-blue-800 bg-blue-100 rounded px-6 py-1">
+                      <span>Box</span><span>box</span><span>50</span><span>2000.00</span><span>1500.00</span><span className="text-blue-700 font-bold">Sale</span>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-12 gap-2 px-2 py-1.5 bg-muted/50 rounded text-xs font-semibold text-muted-foreground">
-                    <div className="col-span-2">Unit Name</div>
-                    <div className="col-span-1">Short</div>
+                  <div className="grid grid-cols-12 gap-1.5 px-2 py-1.5 bg-muted/50 rounded text-xs font-semibold text-muted-foreground">
+                    <div className="col-span-3">Unit Name</div>
+                    <div className="col-span-2">Short</div>
                     <div className="col-span-1 text-right">Conv.</div>
-                    <div className="col-span-2 text-right">Sale Price</div>
-                    <div className="col-span-2 text-right">Cost Price</div>
-                    <div className="col-span-2 text-center">Flags</div>
-                    <div className="col-span-2"></div>
+                    <div className="col-span-2 text-right">Sale ৳</div>
+                    <div className="col-span-2 text-right">Cost ৳</div>
+                    <div className="col-span-1 text-center">Base</div>
+                    <div className="col-span-1 text-center">Sale</div>
                   </div>
 
                   {units.map((unit, index) => (
-                    <div key={unit.id} className="grid grid-cols-12 gap-2 p-2 bg-muted/30 rounded-lg items-center">
-                      <div className="col-span-2">
-                        <input placeholder="e.g. Box, Carton" value={unit.unit_name} onChange={e => updateUnit(index, 'unit_name', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm" />
+                    <div key={unit.id} className="grid grid-cols-12 gap-1.5 p-2 bg-muted/30 rounded-lg items-center">
+                      <div className="col-span-3">
+                        <input
+                          list={`unit-list-${index}`}
+                          placeholder="Type or pick unit..."
+                          value={unit.unit_name}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const match = unitTypes.find(u => u.unit_name.toLowerCase() === val.toLowerCase());
+                            updateUnit(index, 'unit_name', val);
+                            if (match && !unit.unit_short) updateUnit(index, 'unit_short', match.unit_short);
+                          }}
+                          className="w-full border border-border rounded px-2 py-1 text-sm"
+                        />
+                        <datalist id={`unit-list-${index}`}>
+                          {unitTypes.map(u => <option key={u.id} value={u.unit_name}>{u.unit_short}</option>)}
+                        </datalist>
                       </div>
-                      <div className="col-span-1">
-                        <input placeholder="e.g. bx" value={unit.unit_short || ''} onChange={e => updateUnit(index, 'unit_short', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm" />
+                      <div className="col-span-2">
+                        <input
+                          placeholder="e.g. box"
+                          value={unit.unit_short || ''}
+                          onChange={e => updateUnit(index, 'unit_short', e.target.value)}
+                          className="w-full border border-border rounded px-2 py-1 text-sm"
+                        />
                       </div>
                       <div className="col-span-1">
                         <input type="number" min="1" placeholder="1" value={unit.conversion_factor} onChange={e => updateUnit(index, 'conversion_factor', parseFloat(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right" />
@@ -891,12 +921,12 @@ function ProductModal({ categories, brands, warehouses, product, onClose, onSave
                       <div className="col-span-2">
                         <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.cost_price} onChange={e => updateUnit(index, 'cost_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right" />
                       </div>
-                      <div className="col-span-2 flex gap-1 flex-wrap justify-center">
-                        <button type="button" onClick={() => updateUnit(index, 'is_base_unit', !unit.is_base_unit)} className={`px-2 py-1 rounded text-[10px] font-medium transition ${unit.is_base_unit ? 'bg-green-500 text-white' : 'bg-muted text-muted-foreground hover:bg-green-100 hover:text-green-700'}`} title="Base unit is the smallest unit. Stock is tracked in base units.">Base</button>
-                        <button type="button" onClick={() => updateUnit(index, 'is_sale_unit', !unit.is_sale_unit)} className={`px-2 py-1 rounded text-[10px] font-medium transition ${unit.is_sale_unit ? 'bg-blue-500 text-white' : 'bg-muted text-muted-foreground hover:bg-blue-100 hover:text-blue-700'}`} title="Default unit shown in sales/POS.">Sale</button>
+                      <div className="col-span-1 flex justify-center">
+                        <button type="button" onClick={() => updateUnit(index, 'is_base_unit', !unit.is_base_unit)} className={`w-full px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_base_unit ? 'bg-green-500 text-white' : 'bg-muted text-muted-foreground hover:bg-green-100 hover:text-green-700'}`} title="Base unit — stock tracked in this unit">B</button>
                       </div>
-                      <div className="col-span-2 flex justify-end">
-                        <button type="button" onClick={() => removeUnit(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                      <div className="col-span-1 flex justify-center items-center gap-1">
+                        <button type="button" onClick={() => updateUnit(index, 'is_sale_unit', !unit.is_sale_unit)} className={`w-6 px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_sale_unit ? 'bg-blue-500 text-white' : 'bg-muted text-muted-foreground hover:bg-blue-100 hover:text-blue-700'}`} title="Default unit in sales/POS">S</button>
+                        <button type="button" onClick={() => removeUnit(index)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button>
                       </div>
                     </div>
                   ))}
@@ -1779,14 +1809,16 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
   );
 }
 
-function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
+function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }: {
   categories: Category[];
   brands: Brand[];
+  unitTypes: { id: string; unit_name: string; unit_short: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [tab, setTab] = useState<'categories' | 'brands'>('categories');
+  const [tab, setTab] = useState<'categories' | 'brands' | 'units'>('categories');
   const [newName, setNewName] = useState('');
+  const [newShort, setNewShort] = useState('');
   const [parentCategory, setParentCategory] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -1800,42 +1832,41 @@ function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
 
   function toggleCategory(id: string) {
     const newExpanded = new Set(expandedCategories);
-    if (newExpanded.has(id)) {
-      newExpanded.delete(id);
-    } else {
-      newExpanded.add(id);
-    }
+    if (newExpanded.has(id)) newExpanded.delete(id);
+    else newExpanded.add(id);
     setExpandedCategories(newExpanded);
   }
 
   async function handleAdd() {
     if (!newName.trim()) return;
+    if (tab === 'units' && !newShort.trim()) return;
     setSaving(true);
-    const table = tab === 'categories' ? 'categories' : 'brands';
-    const insertData: any = { name: newName.trim(), is_active: true, slug: newName.trim().toLowerCase().replace(/\s+/g, '-') };
-    if (tab === 'categories' && parentCategory) {
-      insertData.parent_id = parentCategory;
-    }
-    const { error } = await supabase.from(table).insert(insertData);
-    if (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+
+    if (tab === 'units') {
+      const { error } = await supabase.from('unit_types').insert({ unit_name: newName.trim(), unit_short: newShort.trim().toLowerCase(), is_active: true });
+      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      else { toast({ title: 'Unit added' }); setNewName(''); setNewShort(''); onSaved(); }
     } else {
-      toast({ title: 'Success', description: `${tab === 'categories' ? 'Category' : 'Brand'} added` });
-      setNewName('');
-      setParentCategory('');
-      onSaved();
+      const table = tab === 'categories' ? 'categories' : 'brands';
+      const insertData: any = { name: newName.trim(), is_active: true, slug: newName.trim().toLowerCase().replace(/\s+/g, '-') };
+      if (tab === 'categories' && parentCategory) insertData.parent_id = parentCategory;
+      const { error } = await supabase.from(table).insert(insertData);
+      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      else { toast({ title: 'Success', description: `${tab === 'categories' ? 'Category' : 'Brand'} added` }); setNewName(''); setParentCategory(''); onSaved(); }
     }
     setSaving(false);
   }
 
-  async function handleDelete(id: string) {
-    const table = tab === 'categories' ? 'categories' : 'brands';
-    const { error } = await supabase.from(table).update({ is_active: false }).eq('id', id);
-    if (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+  async function handleDelete(id: string, isUnit = false) {
+    if (isUnit) {
+      const { error } = await supabase.from('unit_types').update({ is_active: false }).eq('id', id);
+      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      else { toast({ title: 'Unit removed' }); onSaved(); }
     } else {
-      toast({ title: 'Success', description: `${tab === 'categories' ? 'Category' : 'Brand'} deleted` });
-      onSaved();
+      const table = tab === 'categories' ? 'categories' : 'brands';
+      const { error } = await supabase.from(table).update({ is_active: false }).eq('id', id);
+      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      else { toast({ title: 'Deleted' }); onSaved(); }
     }
   }
 
@@ -1849,52 +1880,107 @@ function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <div className="flex border-b border-border">
-          <button
-            onClick={() => { setTab('categories'); setNewName(''); setParentCategory(''); }}
-            className={`flex-1 py-3 text-sm font-medium transition ${tab === 'categories' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            Categories ({categories.length})
-          </button>
-          <button
-            onClick={() => { setTab('brands'); setNewName(''); }}
-            className={`flex-1 py-3 text-sm font-medium transition ${tab === 'brands' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            Brands ({brands.length})
-          </button>
+          {([
+            { key: 'categories', label: `Categories (${categories.length})` },
+            { key: 'brands', label: `Brands (${brands.length})` },
+            { key: 'units', label: `Units (${unitTypes.length})` },
+          ] as const).map(t => (
+            <button
+              key={t.key}
+              onClick={() => { setTab(t.key); setNewName(''); setNewShort(''); setParentCategory(''); }}
+              className={`flex-1 py-3 text-xs font-medium transition ${tab === t.key ? 'text-blue-600 border-b-2 border-blue-600' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
         <div className="p-4">
           <div className="space-y-2 mb-4">
-            <div className="flex gap-2">
-              <input
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAdd()}
-                placeholder={`New ${tab === 'categories' ? 'category' : 'brand'} name...`}
-                className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              />
-              <button
-                onClick={handleAdd}
-                disabled={saving || !newName.trim()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
-              >
-                Add
-              </button>
-            </div>
-            {tab === 'categories' && (
-              <select
-                value={parentCategory}
-                onChange={e => setParentCategory(e.target.value)}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
-              >
-                <option value="">Top-level category</option>
-                {parentCategories.map(c => (
-                  <option key={c.id} value={c.id}>Sub-category of: {c.name}</option>
-                ))}
-              </select>
+            {tab === 'units' ? (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                    placeholder="Unit name (e.g. Carton)"
+                    className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <input
+                    value={newShort}
+                    onChange={e => setNewShort(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                    placeholder="Short (e.g. ctn)"
+                    className="w-24 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <button
+                    onClick={handleAdd}
+                    disabled={saving || !newName.trim() || !newShort.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">Short name is the abbreviation shown on invoices (e.g. "pcs", "box", "ctn").</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                    placeholder={`New ${tab === 'categories' ? 'category' : 'brand'} name...`}
+                    className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <button
+                    onClick={handleAdd}
+                    disabled={saving || !newName.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </div>
+                {tab === 'categories' && (
+                  <select
+                    value={parentCategory}
+                    onChange={e => setParentCategory(e.target.value)}
+                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+                  >
+                    <option value="">Top-level category</option>
+                    {parentCategories.map(c => (
+                      <option key={c.id} value={c.id}>Sub-category of: {c.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
             )}
           </div>
+
           <div className="space-y-1 max-h-64 overflow-y-auto">
-            {items.length === 0 ? (
+            {tab === 'units' ? (
+              unitTypes.length === 0 ? (
+                <p className="text-center text-sm text-muted-foreground py-6">No units yet. Add one above.</p>
+              ) : (
+                <div className="grid grid-cols-3 gap-1 px-2 py-1 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
+                  <span>Name</span><span>Short</span><span></span>
+                </div>
+              ) && unitTypes.map(u => (
+                <div key={u.id} className="grid grid-cols-3 gap-1 items-center px-2 py-1.5 rounded-lg hover:bg-muted/50 group">
+                  <span className="text-sm text-foreground font-medium">{u.unit_name}</span>
+                  <span className="text-sm text-muted-foreground font-mono">{u.unit_short}</span>
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => handleDelete(u.id, true)}
+                      className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition"
+                      title="Remove unit"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : items.length === 0 ? (
               <p className="text-center text-sm text-muted-foreground py-6">No {tab} added yet. Add one above.</p>
             ) : tab === 'categories' ? (
               parentCategories.map(cat => {
@@ -1912,11 +1998,7 @@ function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
                         <span className="text-sm text-foreground font-medium">{cat.name}</span>
                         {subs.length > 0 && <span className="text-xs text-muted-foreground">({subs.length})</span>}
                       </div>
-                      <button
-                        onClick={() => handleDelete(cat.id)}
-                        className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition"
-                        title="Delete"
-                      >
+                      <button onClick={() => handleDelete(cat.id)} className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition" title="Delete">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -1925,11 +2007,7 @@ function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
                         {subs.map(sub => (
                           <div key={sub.id} className="flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-muted/50 group">
                             <span className="text-sm text-muted-foreground">{sub.name}</span>
-                            <button
-                              onClick={() => handleDelete(sub.id)}
-                              className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition"
-                              title="Delete"
-                            >
+                            <button onClick={() => handleDelete(sub.id)} className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition" title="Delete">
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
@@ -1943,11 +2021,7 @@ function ManageCatalogModal({ categories, brands, onClose, onSaved }: {
               brands.map(item => (
                 <div key={item.id} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted/50 group">
                   <span className="text-sm text-foreground">{item.name}</span>
-                  <button
-                    onClick={() => handleDelete(item.id)}
-                    className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition"
-                    title="Delete"
-                  >
+                  <button onClick={() => handleDelete(item.id)} className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-red-600 hover:bg-red-50 transition" title="Delete">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>

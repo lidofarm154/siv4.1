@@ -6,8 +6,20 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery } from '@/lib/types';
+
+interface SalesReturn {
+  id: string;
+  return_number: string;
+  invoice_id: string;
+  total_refund_amount: number;
+  refund_method: string;
+  status: string;
+  notes: string;
+  created_at: string;
+  invoice?: { invoice_number: string };
+}
 
 interface ManualReceivable {
   id: string;
@@ -25,6 +37,8 @@ interface CustomerStats {
   totalPaid: number;
   totalOutstanding: number;
   totalPurchases: number;
+  totalRefunds: number;
+  netPurchases: number;
   activeDeliveries: number;
   manualReceivables: number;
   manualReceivablesOutstanding: number;
@@ -38,14 +52,16 @@ export default function CustomerDetailPage() {
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<CustomerStats>({
-    totalInvoices: 0, totalPaid: 0, totalOutstanding: 0, totalPurchases: 0, activeDeliveries: 0,
+    totalInvoices: 0, totalPaid: 0, totalOutstanding: 0, totalPurchases: 0,
+    totalRefunds: 0, netPurchases: 0, activeDeliveries: 0,
     manualReceivables: 0, manualReceivablesOutstanding: 0
   });
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [manualReceivables, setManualReceivables] = useState<ManualReceivable[]>([]);
-  const [activeTab, setActiveTab] = useState<'invoices' | 'quotations' | 'deliveries' | 'receivables'>('invoices');
+  const [salesReturns, setSalesReturns] = useState<SalesReturn[]>([]);
+  const [activeTab, setActiveTab] = useState<'invoices' | 'quotations' | 'deliveries' | 'receivables' | 'returns'>('invoices');
 
   useEffect(() => { loadCustomerData(); }, [customerId]);
 
@@ -65,12 +81,13 @@ export default function CustomerDetailPage() {
     }
     setCustomer(custData);
 
-    const [invRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes] = await Promise.all([
+    const [invRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes] = await Promise.all([
       supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(20),
       supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
       supabase.from('deliveries').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
       supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_debit, created_at').eq('customer_id', customerId).eq('reference_type', 'receivable').eq('is_posted', true).order('entry_date', { ascending: false }),
       supabase.from('payments').select('reference_id, amount').eq('reference_type', 'receivable'),
+      supabase.from('sales_returns').select('*, invoice:invoices(invoice_number)').eq('customer_id', customerId).order('created_at', { ascending: false }),
     ]);
 
     setInvoices(invRes.data || []);
@@ -94,17 +111,23 @@ export default function CustomerDetailPage() {
     });
 
     setManualReceivables(receivablesWithPayments);
+    setSalesReturns(returnsRes.data || []);
 
     const invData = invRes.data || [];
+    const returnsData = returnsRes.data || [];
     const totalPaid = invData.reduce((s, i) => s + Number(i.amount_paid), 0);
     const totalOut = invData.reduce((s, i) => s + Number(i.balance_due || i.total_amount - i.amount_paid), 0);
     const manualReceivablesOutstanding = receivablesWithPayments.reduce((s, r) => s + r.outstanding_balance, 0);
+    const totalRefunds = returnsData.reduce((s, r) => s + Number(r.total_refund_amount), 0);
+    const netPurchases = Number(custData.total_purchases) - totalRefunds;
 
     setStats({
       totalInvoices: invData.length,
       totalPaid,
       totalOutstanding: totalOut,
       totalPurchases: custData.total_purchases,
+      totalRefunds,
+      netPurchases,
       activeDeliveries: (delivRes.data || []).filter(d => d.status !== 'delivered' && d.status !== 'returned').length,
       manualReceivables: receivablesWithPayments.length,
       manualReceivablesOutstanding,
@@ -194,6 +217,22 @@ export default function CustomerDetailPage() {
                 <span className="text-muted-foreground flex items-center gap-2"><DollarSign className="w-4 h-4" />Outstanding</span>
                 <span className="font-semibold text-red-600">{formatCurrency(customer.outstanding_balance)}</span>
               </div>
+              <div className="flex items-center justify-between text-sm border-t border-border pt-3 mt-1">
+                <span className="text-muted-foreground flex items-center gap-2"><ShoppingBag className="w-4 h-4" />Total Purchases</span>
+                <span className="font-semibold text-foreground">{formatCurrency(stats.totalPurchases)}</span>
+              </div>
+              {stats.totalRefunds > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground flex items-center gap-2"><RotateCcw className="w-4 h-4" />Total Returned</span>
+                  <span className="font-semibold text-red-500">-{formatCurrency(stats.totalRefunds)}</span>
+                </div>
+              )}
+              {stats.totalRefunds > 0 && (
+                <div className="flex items-center justify-between text-sm bg-teal-50 px-2 py-1.5 rounded-lg -mx-2">
+                  <span className="text-teal-700 font-semibold flex items-center gap-2"><DollarSign className="w-4 h-4" />Net Purchases</span>
+                  <span className="font-bold text-teal-700">{formatCurrency(stats.netPurchases)}</span>
+                </div>
+              )}
               {customer.discount_percent > 0 && (
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground flex items-center gap-2"><Star className="w-4 h-4" />Discount</span>
@@ -210,21 +249,29 @@ export default function CustomerDetailPage() {
                 <p className="text-xl font-bold text-blue-600">{stats.totalInvoices}</p>
                 <p className="text-xs text-blue-700">Invoices</p>
               </div>
+              <div className="bg-orange-50 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-orange-600">{salesReturns.length}</p>
+                <p className="text-xs text-orange-700">Returns</p>
+              </div>
               <div className="bg-green-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-green-600">{formatCurrency(stats.totalPaid)}</p>
+                <p className="text-lg font-bold text-green-600">{formatCurrency(stats.totalPaid)}</p>
                 <p className="text-xs text-green-700">Total Paid</p>
               </div>
               <div className="bg-red-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-red-600">{formatCurrency(stats.totalOutstanding)}</p>
-                <p className="text-xs text-red-700">Invoice Outstanding</p>
+                <p className="text-lg font-bold text-red-600">{formatCurrency(stats.totalRefunds)}</p>
+                <p className="text-xs text-red-700">Total Refunded</p>
               </div>
-              <div className="bg-purple-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-purple-600">{formatCurrency(stats.manualReceivablesOutstanding)}</p>
-                <p className="text-xs text-purple-700">Manual Receivables</p>
+              <div className="bg-teal-50 rounded-lg p-3 text-center col-span-2 border border-teal-100">
+                <p className="text-xl font-bold text-teal-600">{formatCurrency(stats.netPurchases)}</p>
+                <p className="text-xs text-teal-700 font-medium">Net Purchases (after returns)</p>
               </div>
-              <div className="bg-amber-50 rounded-lg p-3 text-center col-span-2">
+              <div className="bg-amber-50 rounded-lg p-3 text-center">
                 <p className="text-xl font-bold text-amber-600">{stats.activeDeliveries}</p>
                 <p className="text-xs text-amber-700">Active Deliveries</p>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-3 text-center">
+                <p className="text-lg font-bold text-slate-600">{formatCurrency(stats.totalOutstanding)}</p>
+                <p className="text-xs text-slate-600">Outstanding</p>
               </div>
             </div>
           </div>
@@ -232,10 +279,11 @@ export default function CustomerDetailPage() {
 
         <div className="lg:col-span-2">
           <div className="bg-white rounded-xl border border-border shadow-sm">
-            <div className="flex border-b border-border">
+            <div className="flex border-b border-border overflow-x-auto">
               {[
                 { key: 'invoices', label: 'Invoices', icon: Receipt },
-                { key: 'receivables', label: 'Manual Receivables', icon: User },
+                { key: 'returns', label: `Returns${salesReturns.length > 0 ? ` (${salesReturns.length})` : ''}`, icon: RotateCcw },
+                { key: 'receivables', label: 'Receivables', icon: User },
                 { key: 'quotations', label: 'Quotations', icon: FileText },
                 { key: 'deliveries', label: 'Deliveries', icon: Truck },
               ].map(tab => (
@@ -296,6 +344,53 @@ export default function CustomerDetailPage() {
                           </tr>
                         ))}
                       </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'returns' && (
+                <div className="overflow-x-auto">
+                  {salesReturns.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm">
+                      <RotateCcw className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      No sales returns yet
+                    </div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Return #</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Invoice</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Date</th>
+                          <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Refund</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Method</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {salesReturns.map(ret => (
+                          <tr key={ret.id} className="hover:bg-muted/30">
+                            <td className="px-3 py-2 text-sm font-semibold text-orange-600">{ret.return_number}</td>
+                            <td className="px-3 py-2 text-sm text-blue-600">{ret.invoice?.invoice_number || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(ret.created_at)}</td>
+                            <td className="px-3 py-2 text-sm text-right font-bold text-red-600">{formatCurrency(ret.total_refund_amount)}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground capitalize">{ret.refund_method?.replace(/_/g, ' ')}</td>
+                            <td className="px-3 py-2">
+                              <span className={`badge-status ${ret.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                {ret.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-muted/40 border-t-2 border-border">
+                          <td colSpan={3} className="px-3 py-2 text-sm font-semibold text-muted-foreground">Total Refunded</td>
+                          <td className="px-3 py-2 text-sm text-right font-bold text-red-600">{formatCurrency(stats.totalRefunds)}</td>
+                          <td colSpan={2}></td>
+                        </tr>
+                      </tfoot>
                     </table>
                   )}
                 </div>
