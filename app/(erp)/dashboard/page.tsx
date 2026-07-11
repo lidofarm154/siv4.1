@@ -73,8 +73,8 @@ export default function DashboardPage() {
       quotRes, projRes, dlvRes, onlineOrdersRes, topCustRes, duesRes,
       lowStockRes, activeProjRes, actRes
     ] = await Promise.all([
-      supabase.from('invoices').select('total_amount').eq('invoice_date', today),
-      supabase.from('invoices').select('total_amount, created_at').gte('invoice_date', monthStart),
+      supabase.from('invoices').select('total_amount').eq('invoice_date', today).neq('status', 'cancelled'),
+      supabase.from('invoices').select('total_amount, created_at').gte('invoice_date', monthStart).neq('status', 'cancelled'),
       supabase.from('customers').select('outstanding_balance'),
       supabase.from('suppliers').select('outstanding_balance'),
       supabase.from('inventory_items').select('quantity_on_hand, product:products(cost_price)'),
@@ -150,7 +150,8 @@ export default function DashboardPage() {
         .from('invoices')
         .select('total_amount, subtotal')
         .gte('invoice_date', startDate)
-        .lt('invoice_date', endDate);
+        .lt('invoice_date', endDate)
+        .neq('status', 'cancelled');
 
       const totalSales = (invoices || []).reduce((s: number, inv: any) => s + Number(inv.total_amount), 0);
       const estimatedProfit = totalSales * 0.35;

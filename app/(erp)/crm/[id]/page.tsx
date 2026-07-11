@@ -103,7 +103,7 @@ export default function CustomerDetailPage() {
 
     const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes] = await Promise.all([
       supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(20),
-      supabase.from('invoices').select('total_amount').eq('customer_id', customerId),
+      supabase.from('invoices').select('total_amount').eq('customer_id', customerId).neq('status', 'cancelled'),
       supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
       supabase.from('deliveries').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
       supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_debit, created_at').eq('customer_id', customerId).eq('reference_type', 'receivable').eq('is_posted', true).order('entry_date', { ascending: false }),

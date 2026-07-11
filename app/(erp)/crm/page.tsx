@@ -36,7 +36,7 @@ export default function CRMPage() {
     setLoading(true);
     const [{ data }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
       supabase.from('customers').select('*').order('name'),
-      supabase.from('invoices').select('customer_id, total_amount'),
+      supabase.from('invoices').select('customer_id, total_amount, status').neq('status', 'cancelled'),
       supabase.from('sales_returns').select('customer_id, total_refund_amount'),
     ]);
 
