@@ -57,11 +57,9 @@ export default function AccountingPage() {
   async function loadData() {
     setLoading(true);
 
-    // Step 1: Fetch accounts
     const { data: accountsData } = await supabase.from('accounts').select('*').eq('is_active', true).order('code');
     setAccounts(accountsData || []);
 
-    // Step 2: Fetch recent journal entries for display
     const { data: entriesData } = await supabase.from('journal_entries')
       .select('id, entry_number, entry_date, description, reference_type, total_debit, total_credit, lines:journal_lines(id, account_id, description, debit, credit, account:accounts(name, code, balance, account_type))')
       .eq('is_posted', true)
@@ -70,7 +68,6 @@ export default function AccountingPage() {
 
     const entries = (entriesData as JournalEntry[]) || [];
 
-    // Step 3: Fetch ALL posted journal entries in chronological order for balance history computation
     const { data: orderedEntries } = await supabase.from('journal_entries')
       .select('id')
       .eq('is_posted', true)
@@ -79,75 +76,49 @@ export default function AccountingPage() {
 
     const orderedEntryIds = (orderedEntries || []).map(e => e.id);
 
-    // Step 4: Fetch all journal lines for those entries
     let allLines: any[] = [];
     if (orderedEntryIds.length > 0) {
-      // Fetch in batches to avoid URL length limits
       const batchSize = 100;
       for (let i = 0; i < orderedEntryIds.length; i += batchSize) {
         const batchIds = orderedEntryIds.slice(i, i + batchSize);
         const { data: batchLines } = await supabase.from('journal_lines')
           .select('journal_entry_id, account_id, debit, credit')
           .in('journal_entry_id', batchIds);
-        if (batchLines) {
-          // Sort lines by their entry's position in orderedEntryIds
-          const lineSorter = (a: any, b: any) => {
-            const idxA = orderedEntryIds.indexOf(a.journal_entry_id);
-            const idxB = orderedEntryIds.indexOf(b.journal_entry_id);
-            return idxA - idxB;
-          };
-          allLines = allLines.concat(batchLines);
-        }
+        if (batchLines) allLines = allLines.concat(batchLines);
       }
     }
 
-    // Sort all lines by their entry's chronological order
     const entryOrderIndex = new Map<string, number>();
     orderedEntryIds.forEach((id, idx) => entryOrderIndex.set(id, idx));
     allLines.sort((a, b) => (entryOrderIndex.get(a.journal_entry_id) ?? 0) - (entryOrderIndex.get(b.journal_entry_id) ?? 0));
 
-    // Step 5: Group lines by entry
     const linesByEntry = new Map<string, any[]>();
     for (const l of allLines) {
       const jeId = l.journal_entry_id;
-      if (!linesByEntry.has(jeId)) {
-        linesByEntry.set(jeId, []);
-      }
+      if (!linesByEntry.has(jeId)) linesByEntry.set(jeId, []);
       linesByEntry.get(jeId)!.push(l);
     }
 
-    // Step 6: Compute running balance per account going through entries chronologically
     const runningBalance = new Map<string, number>();
-    const balanceBeforeEntry = new Map<string, Map<string, number>>(); // entryId -> (accountId -> balance before)
-    const balanceAfterEntry = new Map<string, Map<string, number>>(); // entryId -> (accountId -> balance after)
+    const balanceBeforeEntry = new Map<string, Map<string, number>>();
+    const balanceAfterEntry = new Map<string, Map<string, number>>();
 
     for (const jeId of orderedEntryIds) {
-      // Snapshot balance before this entry
       const before = new Map<string, number>();
-      for (const [accId, bal] of runningBalance) {
-        before.set(accId, bal);
-      }
+      for (const [accId, bal] of runningBalance) before.set(accId, bal);
       balanceBeforeEntry.set(jeId, before);
 
-      // Apply this entry's lines to running balance
       const lines = linesByEntry.get(jeId) || [];
       for (const l of lines) {
-        const accId = l.account_id;
-        const debit = Number(l.debit || 0);
-        const credit = Number(l.credit || 0);
-        const current = runningBalance.get(accId) || 0;
-        runningBalance.set(accId, current + debit - credit);
+        const current = runningBalance.get(l.account_id) || 0;
+        runningBalance.set(l.account_id, current + Number(l.debit || 0) - Number(l.credit || 0));
       }
 
-      // Snapshot balance after this entry
       const after = new Map<string, number>();
-      for (const [accId, bal] of runningBalance) {
-        after.set(accId, bal);
-      }
+      for (const [accId, bal] of runningBalance) after.set(accId, bal);
       balanceAfterEntry.set(jeId, after);
     }
 
-    // Step 7: Attach computed balances to each recent entry's lines
     for (const entry of entries) {
       if (!entry.lines) continue;
       const afterMap = balanceAfterEntry.get(entry.id);
@@ -178,8 +149,7 @@ export default function AccountingPage() {
 
     const receivablePaymentsMap = new Map<string, number>();
     (receivablePayments || []).forEach(p => {
-      const current = receivablePaymentsMap.get(p.reference_id) || 0;
-      receivablePaymentsMap.set(p.reference_id, current + Number(p.amount));
+      receivablePaymentsMap.set(p.reference_id, (receivablePaymentsMap.get(p.reference_id) || 0) + Number(p.amount));
     });
 
     const receivablesList: ManualReceivablePayable[] = [];
@@ -187,13 +157,8 @@ export default function AccountingPage() {
       const paidAmount = receivablePaymentsMap.get(entry.id) || 0;
       const outstanding = Number(entry.total_debit) - paidAmount;
       if (outstanding > 0) {
-        // Get customer info from journal_lines -> related customer
         const { data: lineData } = await supabase.from('journal_lines')
-          .select('description')
-          .eq('journal_entry_id', entry.id)
-          .eq('debit', 0)
-          .maybeSingle();
-
+          .select('description').eq('journal_entry_id', entry.id).eq('debit', 0).maybeSingle();
         receivablesList.push({
           id: entry.id,
           entry_number: entry.entry_number,
@@ -202,7 +167,7 @@ export default function AccountingPage() {
           amount: Number(entry.total_debit),
           paid_amount: paidAmount,
           outstanding_balance: outstanding,
-          party_name: lineData?.description?.replace('Receivable from ', '') || 'Customer',
+          party_name: lineData?.description?.replace('Receivable from ', '') || entry.description || 'Customer',
         });
       }
     }
@@ -221,8 +186,7 @@ export default function AccountingPage() {
 
     const payablePaymentsMap = new Map<string, number>();
     (payablePayments || []).forEach(p => {
-      const current = payablePaymentsMap.get(p.reference_id) || 0;
-      payablePaymentsMap.set(p.reference_id, current + Number(p.amount));
+      payablePaymentsMap.set(p.reference_id, (payablePaymentsMap.get(p.reference_id) || 0) + Number(p.amount));
     });
 
     const payablesList: ManualReceivablePayable[] = [];
@@ -231,11 +195,7 @@ export default function AccountingPage() {
       const outstanding = Number(entry.total_credit) - paidAmount;
       if (outstanding > 0) {
         const { data: lineData } = await supabase.from('journal_lines')
-          .select('description')
-          .eq('journal_entry_id', entry.id)
-          .eq('credit', 0)
-          .maybeSingle();
-
+          .select('description').eq('journal_entry_id', entry.id).eq('credit', 0).maybeSingle();
         payablesList.push({
           id: entry.id,
           entry_number: entry.entry_number,
@@ -244,7 +204,7 @@ export default function AccountingPage() {
           amount: Number(entry.total_credit),
           paid_amount: paidAmount,
           outstanding_balance: outstanding,
-          party_name: lineData?.description?.replace('Payable to ', '') || 'Supplier',
+          party_name: lineData?.description?.replace('Payable to ', '') || entry.description || 'Supplier',
         });
       }
     }
@@ -253,6 +213,8 @@ export default function AccountingPage() {
     setLoading(false);
   }
 
+  // Compute P&L from journal lines (period-aware, computed not stale stored balances)
+  // For the overview cards we use stored account balances — they reflect all-time net position
   const assets = accounts.filter(a => a.account_type === 'asset');
   const liabilities = accounts.filter(a => a.account_type === 'liability');
   const revenue = accounts.filter(a => a.account_type === 'revenue');
@@ -260,9 +222,16 @@ export default function AccountingPage() {
 
   const totalAssets = assets.reduce((s, a) => s + Number(a.balance), 0);
   const totalLiabilities = liabilities.reduce((s, a) => s + Number(a.balance), 0);
-  const totalRevenue = revenue.reduce((s, a) => s + Number(a.balance), 0);
-  const totalExpenses = expenses.reduce((s, a) => s + Number(a.balance), 0);
-  const netProfit = totalRevenue - totalExpenses;
+  // Revenue net of contra-revenue (Sales Returns 4050, Discount Given 4200) and COGS (5000)
+  const CONTRA_REVENUE_CODES = new Set(['4050', '4200', '5000']);
+  const netRevenue = revenue.reduce((s, a) => s + Number(a.balance), 0);
+  const netExpenses = expenses
+    .filter(a => !CONTRA_REVENUE_CODES.has(a.code))
+    .reduce((s, a) => s + Number(a.balance), 0);
+  const cogsBalance = expenses.filter(a => a.code === '5000').reduce((s, a) => s + Number(a.balance), 0);
+  const salesReturnsBalance = expenses.filter(a => a.code === '4050').reduce((s, a) => s + Number(a.balance), 0);
+  const grossProfit = netRevenue - salesReturnsBalance - cogsBalance;
+  const netProfit = grossProfit - netExpenses;
 
   useEffect(() => {
     async function loadMonthlyData() {
@@ -270,47 +239,56 @@ export default function AccountingPage() {
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
       sixMonthsAgo.setDate(1);
 
-      const { data: entries } = await supabase
-        .from('journal_entries')
-        .select('entry_date, total_debit, total_credit, reference_type')
-        .gte('entry_date', sixMonthsAgo.toISOString().split('T')[0])
-        .order('entry_date');
+      // Fetch revenue from invoice journal credits on account 4000
+      const { data: revenueLines } = await supabase
+        .from('journal_lines')
+        .select('credit, journal_entry:journal_entries!inner(entry_date, reference_type)')
+        .eq('account_id', (await supabase.from('accounts').select('id').eq('code', '4000').maybeSingle()).data?.id || '')
+        .gte('journal_entries.entry_date', sixMonthsAgo.toISOString().split('T')[0]);
 
-      if (!entries) return;
+      // Fetch expenses from expense account debits (excluding COGS/returns)
+      const { data: expenseAccounts } = await supabase
+        .from('accounts')
+        .select('id')
+        .eq('account_type', 'expense')
+        .not('code', 'in', '(5000,4050,4200)');
 
-      const monthMap = new Map<string, { income: number; expense: number }>();
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-      entries.forEach((entry: any) => {
-        const date = new Date(entry.entry_date);
-        const monthKey = monthNames[date.getMonth()];
-
-        if (!monthMap.has(monthKey)) {
-          monthMap.set(monthKey, { income: 0, expense: 0 });
-        }
-
-        const monthData = monthMap.get(monthKey)!;
-        if (entry.reference_type === 'invoice') {
-          monthData.income += Number(entry.total_credit);
-        }
-      });
-
-      if (monthMap.size === 0) {
-        setMonthlyData([
-          { month: 'Jan', income: 0, expense: 0 },
-          { month: 'Feb', income: 0, expense: 0 },
-          { month: 'Mar', income: 0, expense: 0 },
-          { month: 'Apr', income: 0, expense: 0 },
-          { month: 'May', income: 0, expense: 0 },
-          { month: 'Jun', income: 0, expense: 0 },
-        ]);
-      } else {
-        setMonthlyData(Array.from(monthMap.entries()).map(([month, data]) => ({
-          month,
-          income: data.income,
-          expense: data.expense,
-        })));
+      const expenseAccIds = (expenseAccounts || []).map(a => a.id);
+      let expenseLines: any[] = [];
+      if (expenseAccIds.length > 0) {
+        const { data: el } = await supabase
+          .from('journal_lines')
+          .select('debit, journal_entry:journal_entries!inner(entry_date)')
+          .in('account_id', expenseAccIds)
+          .gte('journal_entries.entry_date', sixMonthsAgo.toISOString().split('T')[0]);
+        expenseLines = el || [];
       }
+
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthMap = new Map<string, { income: number; expense: number }>();
+
+      // Seed last 6 months with zeros
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        monthMap.set(monthNames[d.getMonth()], { income: 0, expense: 0 });
+      }
+
+      for (const line of (revenueLines || [])) {
+        const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
+        if (!je?.entry_date) continue;
+        const month = monthNames[new Date(je.entry_date).getMonth()];
+        if (monthMap.has(month)) monthMap.get(month)!.income += Number(line.credit || 0);
+      }
+
+      for (const line of expenseLines) {
+        const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
+        if (!je?.entry_date) continue;
+        const month = monthNames[new Date(je.entry_date).getMonth()];
+        if (monthMap.has(month)) monthMap.get(month)!.expense += Number(line.debit || 0);
+      }
+
+      setMonthlyData(Array.from(monthMap.entries()).map(([month, data]) => ({ month, ...data })));
     }
     loadMonthlyData();
   }, []);
@@ -347,8 +325,8 @@ export default function AccountingPage() {
         {[
           { label: 'Total Assets', value: totalAssets, icon: DollarSign, color: 'text-blue-500 bg-blue-50' },
           { label: 'Total Liabilities', value: totalLiabilities, icon: CreditCard, color: 'text-red-500 bg-red-50' },
-          { label: 'Revenue', value: totalRevenue, icon: TrendingUp, color: 'text-green-500 bg-green-50' },
-          { label: 'Net Profit', value: netProfit, icon: BarChart3, color: netProfit >= 0 ? 'text-purple-500 bg-purple-50' : 'text-red-500 bg-red-50' },
+          { label: 'Gross Profit', value: grossProfit, icon: TrendingUp, color: grossProfit >= 0 ? 'text-green-500 bg-green-50' : 'text-red-500 bg-red-50' },
+          { label: 'Net Profit', value: netProfit, icon: BarChart3, color: netProfit >= 0 ? 'text-blue-500 bg-blue-50' : 'text-red-500 bg-red-50' },
         ].map(s => (
           <div key={s.label} className="stat-card">
             <div className="flex items-center justify-between mb-2">
@@ -360,6 +338,7 @@ export default function AccountingPage() {
             <p className={`text-xl font-bold mt-0.5 ${Number(s.value) >= 0 ? 'text-foreground' : 'text-red-600'}`}>
               {formatCurrency(Math.abs(Number(s.value)))}
             </p>
+            {Number(s.value) < 0 && <p className="text-xs text-red-500 mt-0.5">Net Loss</p>}
           </div>
         ))}
       </div>
@@ -367,14 +346,14 @@ export default function AccountingPage() {
       {/* Income vs Expense Chart */}
       <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-foreground">Revenue Overview</h3>
+          <h3 className="text-sm font-semibold text-foreground">Revenue vs Expenses</h3>
           <span className="text-xs text-muted-foreground">Last 6 months</span>
         </div>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={monthlyData} barSize={20} barGap={4}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
             <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v} />
+            <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : String(v)} />
             <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
             <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} name="Revenue" />
             <Bar dataKey="expense" fill="#ef4444" radius={[4, 4, 0, 0]} name="Expenses" />
@@ -440,7 +419,7 @@ export default function AccountingPage() {
         </div>
       </div>
 
-      {/* Manual Receivables Management */}
+      {/* Manual Receivables & Payables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="bg-white rounded-xl border border-border shadow-sm">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
@@ -471,10 +450,7 @@ export default function AccountingPage() {
                         <span className="font-bold text-red-600">{formatCurrency(r.outstanding_balance)}</span>
                         <span className="text-muted-foreground ml-2">of {formatCurrency(r.amount)}</span>
                       </div>
-                      <button
-                        onClick={() => setShowReceivablePayment(r)}
-                        className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 transition font-medium"
-                      >
+                      <button onClick={() => setShowReceivablePayment(r)} className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 transition font-medium">
                         Collect
                       </button>
                     </div>
@@ -485,7 +461,6 @@ export default function AccountingPage() {
           </div>
         </div>
 
-        {/* Manual Payables Management */}
         <div className="bg-white rounded-xl border border-border shadow-sm">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -515,10 +490,7 @@ export default function AccountingPage() {
                         <span className="font-bold text-amber-600">{formatCurrency(p.outstanding_balance)}</span>
                         <span className="text-muted-foreground ml-2">of {formatCurrency(p.amount)}</span>
                       </div>
-                      <button
-                        onClick={() => setShowPayablePayment(p)}
-                        className="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100 transition font-medium"
-                      >
+                      <button onClick={() => setShowPayablePayment(p)} className="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100 transition font-medium">
                         Pay
                       </button>
                     </div>
@@ -530,7 +502,7 @@ export default function AccountingPage() {
         </div>
       </div>
 
-      {/* Recent Transactions */}
+      {/* Recent Journal Entries */}
       <div className="bg-white rounded-xl border border-border shadow-sm">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">Recent Journal Entries</h3>
@@ -561,7 +533,6 @@ export default function AccountingPage() {
                         const account = Array.isArray(line.account) ? line.account[0] : line.account;
                         const previousBalance = (line as any)._balanceBefore ?? 0;
                         const currentBalance = (line as any)._balanceAfter ?? 0;
-
                         return (
                           <div key={line.id || idx} className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
@@ -633,21 +604,14 @@ function RecordDropdown({ onExpense, onReceivable, onPayable }: { onExpense: () 
 
   return (
     <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
-      >
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
         <Plus className="w-4 h-4" />Record
         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 bg-white border border-border rounded-xl shadow-lg z-50 w-64 overflow-hidden">
           {options.map((opt, i) => (
-            <button
-              key={i}
-              onClick={() => { opt.onClick(); setOpen(false); }}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition text-left border-b border-border/50 last:border-0"
-            >
+            <button key={i} onClick={() => { opt.onClick(); setOpen(false); }} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition text-left border-b border-border/50 last:border-0">
               <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${opt.color}`}>
                 <opt.icon className="w-4 h-4" />
               </div>
@@ -674,56 +638,39 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const expenseAccounts = accounts.filter(a => a.account_type === 'expense');
-  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
+  const expenseAccounts = accounts.filter(a => a.account_type === 'expense' && !['5000', '4050', '4200'].includes(a.code));
+  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
     if (!form.expense_account || !form.paid_from || !form.amount || parseFloat(form.amount) <= 0) {
       setError('Please fill all required fields');
       return;
     }
-
     setSaving(true);
-
     try {
       const amount = parseFloat(form.amount);
-      const entryNumber = await supabase.rpc('get_next_journal_number');
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
+      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+        entry_date: form.date,
+        description: form.description || 'Expense payment',
+        reference_type: 'manual',
+        total_debit: amount,
+        total_credit: amount,
+        is_posted: true,
+      }).select().single();
+      if (entryError) throw entryError;
 
-      const { data: entry } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber.data || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.date,
-          description: form.description || 'Expense payment',
-          reference_type: 'manual',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-        })
-        .select()
-        .single();
-
-      if (!entry) throw new Error('Failed to create entry');
-
-      // Create journal lines
       await supabase.from('journal_lines').insert([
         { journal_entry_id: entry.id, account_id: form.expense_account, description: form.description, debit: amount, credit: 0, sort_order: 0 },
         { journal_entry_id: entry.id, account_id: form.paid_from, description: form.description, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // Update account balances
-      const expenseAccount = accounts.find(a => a.id === form.expense_account);
-      const cashAccount = accounts.find(a => a.id === form.paid_from);
-
-      if (expenseAccount) {
-        await supabase.from('accounts').update({ balance: (expenseAccount.balance || 0) + amount }).eq('id', form.expense_account);
-      }
-      if (cashAccount) {
-        await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) - amount }).eq('id', form.paid_from);
-      }
+      // Atomic balance updates — no stale read risk
+      await supabase.rpc('increment_account_balance', { p_account_id: form.expense_account, p_delta: amount });
+      await supabase.rpc('increment_account_balance', { p_account_id: form.paid_from, p_delta: -amount });
 
       toast({ title: 'Success', description: 'Expense recorded successfully' });
       setForm({ date: new Date().toISOString().split('T')[0], amount: '', expense_account: '', paid_from: '', description: '' });
@@ -744,108 +691,84 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium mb-1">Date</label>
-                  <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1">Amount *</label>
-                  <input type="number" required value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Expense Type *</label>
-                <select required value={form.expense_account} onChange={e => setForm({ ...form, expense_account: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                  <option value="">Select expense category</option>
-                  {expenseAccounts.map(a => (
-                    <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
-                  ))}
-                  <option value="create_new">+ Add New Expense Account</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Paid From *</label>
-                <select required value={form.paid_from} onChange={e => setForm({ ...form, paid_from: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                  <option value="">Select cash/bank account</option>
-                  {cashBankAccounts.map(a => (
-                    <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Description</label>
-                <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Office supplies, Rent payment" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-                  {saving ? 'Saving...' : 'Record Expense'}
-                </button>
-              </div>
-            </form>
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Date</label>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input type="number" required value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
           </div>
-        </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Expense Type *</label>
+            <select required value={form.expense_account} onChange={e => setForm({ ...form, expense_account: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select expense category</option>
+              {expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Paid From *</label>
+            <select required value={form.paid_from} onChange={e => setForm({ ...form, paid_from: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select cash/bank account</option>
+              {cashBankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Description</label>
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Office supplies, Rent payment" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Record Expense'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
 function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Account[]; onSaved: () => void; onClose: () => void }) {
   const [customers, setCustomers] = useState<any[]>([]);
-  const [form, setForm] = useState({
-    customer_id: '',
-    amount: '',
-    description: '',
-    due_date: '',
-    date: new Date().toISOString().split('T')[0],
-  });
+  const [form, setForm] = useState({ customer_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0] });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const arAccount = accounts.find(a => a.code === '1100');
 
   useEffect(() => {
-    supabase.from('customers').select('id, name, code, phone').eq('is_active', true).order('name')
+    supabase.from('customers').select('id, name, code, outstanding_balance, total_purchases').eq('is_active', true).order('name')
       .then(({ data }) => setCustomers(data || []));
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
     if (!form.customer_id || !form.amount || parseFloat(form.amount) <= 0) {
       setError('Please select a customer and enter an amount');
       return;
     }
-
     setSaving(true);
-
     try {
       const amount = parseFloat(form.amount);
-      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
       const customer = customers.find(c => c.id === form.customer_id);
       const desc = form.description || `Receivable from ${customer?.name || 'Customer'}`;
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
 
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber,
-          entry_date: form.date,
-          description: desc,
-          reference_type: 'receivable',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-          customer_id: form.customer_id,
-        })
-        .select()
-        .single();
-
+      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+        entry_date: form.date,
+        description: desc,
+        reference_type: 'receivable',
+        total_debit: amount,
+        total_credit: amount,
+        is_posted: true,
+        customer_id: form.customer_id,
+      }).select().single();
       if (entryError) throw entryError;
 
       const revenueAccount = accounts.find(a => a.code === '4000');
@@ -856,8 +779,9 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
         { journal_entry_id: entry.id, account_id: revenueAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      await supabase.from('accounts').update({ balance: (arAccount.balance || 0) + amount }).eq('id', arAccount.id);
-      await supabase.from('accounts').update({ balance: (revenueAccount.balance || 0) + amount }).eq('id', revenueAccount.id);
+      // Atomic balance updates
+      await supabase.rpc('increment_account_balance', { p_account_id: arAccount.id, p_delta: amount });
+      await supabase.rpc('increment_account_balance', { p_account_id: revenueAccount.id, p_delta: amount });
 
       if (customer) {
         await supabase.from('customers').update({
@@ -867,7 +791,7 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
       }
 
       toast({ title: 'Success', description: `Receivable of ${formatCurrency(amount)} recorded` });
-      setForm({ customer_id: '', amount: '', description: '', due_date: '', date: new Date().toISOString().split('T')[0] });
+      setForm({ customer_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0] });
       onSaved();
       onClose();
     } catch (err: any) {
@@ -885,43 +809,38 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Customer *</label>
-                <select required value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                  <option value="">Select customer</option>
-                  {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium mb-1">Amount *</label>
-                  <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1">Date</label>
-                  <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-              </div>
-
-              <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-                Dr. Accounts Receivable ({arAccount?.code}) &rarr; Cr. Sales Revenue (4000)
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Description</label>
-                <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Credit sale, Service billed..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-                  {saving ? 'Saving...' : 'Record'}
-                </button>
-              </div>
-            </form>
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer *</label>
+            <select required value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select customer</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Date</label>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
+            Dr. Accounts Receivable ({arAccount?.code}) &rarr; Cr. Sales Revenue (4000)
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Description</label>
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Credit sale, Service billed..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Record'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -929,54 +848,41 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
 
 function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[]; onSaved: () => void; onClose: () => void }) {
   const [suppliers, setSuppliers] = useState<any[]>([]);
-  const [form, setForm] = useState({
-    supplier_id: '',
-    amount: '',
-    description: '',
-    date: new Date().toISOString().split('T')[0],
-  });
+  const [form, setForm] = useState({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0] });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const apAccount = accounts.find(a => a.code === '2000');
 
   useEffect(() => {
-    supabase.from('suppliers').select('id, name, code, phone').eq('is_active', true).order('name')
+    supabase.from('suppliers').select('id, name, code, outstanding_balance').eq('is_active', true).order('name')
       .then(({ data }) => setSuppliers(data || []));
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
     if (!form.supplier_id || !form.amount || parseFloat(form.amount) <= 0) {
       setError('Please select a supplier and enter an amount');
       return;
     }
-
     setSaving(true);
-
     try {
       const amount = parseFloat(form.amount);
-      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
       const supplier = suppliers.find(s => s.id === form.supplier_id);
       const desc = form.description || `Payable to ${supplier?.name || 'Supplier'}`;
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
 
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber,
-          entry_date: form.date,
-          description: desc,
-          reference_type: 'payable',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-          supplier_id: form.supplier_id,
-        })
-        .select()
-        .single();
-
+      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+        entry_date: form.date,
+        description: desc,
+        reference_type: 'payable',
+        total_debit: amount,
+        total_credit: amount,
+        is_posted: true,
+        supplier_id: form.supplier_id,
+      }).select().single();
       if (entryError) throw entryError;
 
       const inventoryAccount = accounts.find(a => a.code === '1200');
@@ -987,14 +893,13 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
         { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      await supabase.from('accounts').update({ balance: (inventoryAccount.balance || 0) + amount }).eq('id', inventoryAccount.id);
-      await supabase.from('accounts').update({ balance: (apAccount.balance || 0) + amount }).eq('id', apAccount.id);
+      // Atomic balance updates
+      await supabase.rpc('increment_account_balance', { p_account_id: inventoryAccount.id, p_delta: amount });
+      await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
 
       if (supplier) {
         const { data: current } = await supabase.from('suppliers').select('outstanding_balance').eq('id', supplier.id).maybeSingle();
-        await supabase.from('suppliers').update({
-          outstanding_balance: (current?.outstanding_balance || 0) + amount,
-        }).eq('id', supplier.id);
+        await supabase.from('suppliers').update({ outstanding_balance: (current?.outstanding_balance || 0) + amount }).eq('id', supplier.id);
       }
 
       toast({ title: 'Success', description: `Payable of ${formatCurrency(amount)} recorded` });
@@ -1016,252 +921,35 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Supplier *</label>
-                <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                  <option value="">Select supplier</option>
-                  {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium mb-1">Amount *</label>
-                  <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1">Date</label>
-                  <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-                </div>
-              </div>
-
-              <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-                Dr. Inventory Asset (1200) &rarr; Cr. Accounts Payable ({apAccount?.code})
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Description</label>
-                <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Goods received on credit, Purchase invoice..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
-                <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-                  {saving ? 'Saving...' : 'Record'}
-                </button>
-              </div>
-            </form>
-      </div>
-    </div>
-  );
-}
-
-function RecordReceivablePaymentModal({
-  receivable,
-  accounts,
-  onClose,
-  onSaved
-}: {
-  receivable: ManualReceivablePayable;
-  accounts: Account[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({
-    amount: receivable.outstanding_balance,
-    payment_date: new Date().toISOString().split('T')[0],
-    payment_method: 'cash',
-    account_id: '',
-    reference_number: '',
-    notes: '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const arAccount = accounts.find(a => a.code === '1100');
-  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-
-    if (!form.account_id || form.amount <= 0) {
-      setError('Please select a cash/bank account and enter a valid amount');
-      return;
-    }
-
-    if (form.amount > receivable.outstanding_balance) {
-      setError(`Amount cannot exceed outstanding balance (${formatCurrency(receivable.outstanding_balance)})`);
-      return;
-    }
-
-    setSaving(true);
-
-    try {
-      const paymentNumber = `PAY-${Date.now().toString().slice(-6)}`;
-      const amount = form.amount;
-      const desc = form.notes || `Payment received for ${receivable.entry_number}`;
-
-      // 1. Create payment record
-      const { error: payError } = await supabase.from('payments').insert({
-        payment_number: paymentNumber,
-        payment_type: 'received',
-        reference_type: 'receivable',
-        reference_id: receivable.id,
-        amount: amount,
-        payment_method: form.payment_method,
-        payment_date: form.payment_date,
-        reference_number: form.reference_number || null,
-        notes: form.notes || null,
-      });
-
-      if (payError) throw payError;
-
-      // 2. Create journal entry: DR Cash/Bank, CR Accounts Receivable
-      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber,
-          entry_date: form.payment_date,
-          description: desc,
-          reference_type: 'payment',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-        })
-        .select()
-        .single();
-
-      if (entryError) throw entryError;
-
-      if (!arAccount) throw new Error('Accounts Receivable account not found');
-
-      await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: arAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-      ]);
-
-      // 3. Update account balances
-      const cashAccount = accounts.find(a => a.id === form.account_id);
-      if (cashAccount) {
-        await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) + amount }).eq('id', form.account_id);
-      }
-      await supabase.from('accounts').update({ balance: (arAccount.balance || 0) - amount }).eq('id', arAccount.id);
-
-      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
-      onSaved();
-      onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to record payment');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <h2 className="text-base font-bold flex items-center gap-2">
-            <HandCoins className="w-4 h-4 text-green-600" />
-            Collect Receivable Payment
-          </h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
-          <div className="bg-muted/30 rounded-lg p-3 space-y-1">
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Receivable:</span>
-              <span className="font-mono">{receivable.entry_number}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Party:</span>
-              <span className="font-medium">{receivable.party_name}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Outstanding:</span>
-              <span className="font-bold text-red-600">{formatCurrency(receivable.outstanding_balance)}</span>
-            </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Supplier *</label>
+            <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select supplier</option>
+              {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+            </select>
           </div>
-
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input
-                type="number"
-                required
-                min="0.01"
-                max={receivable.outstanding_balance}
-                step="0.01"
-                value={form.amount}
-                onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              />
+              <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>
-              <input
-                type="date"
-                value={form.payment_date}
-                onChange={e => setForm({ ...form, payment_date: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              />
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-medium mb-1">Method</label>
-              <select
-                value={form.payment_method}
-                onChange={e => setForm({ ...form, payment_method: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              >
-                <option value="cash">Cash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="card">Card</option>
-                <option value="cheque">Cheque</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Receive Into *</label>
-              <select
-                required
-                value={form.account_id}
-                onChange={e => setForm({ ...form, account_id: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              >
-                <option value="">Select account</option>
-                {cashBankAccounts.map(a => (
-                  <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium mb-1">Reference Number</label>
-            <input
-              value={form.reference_number}
-              onChange={e => setForm({ ...form, reference_number: e.target.value })}
-              placeholder="Cheque no., Transaction ID..."
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-
           <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-            Dr. Cash/Bank &rarr; Cr. Accounts Receivable (1100)
+            Dr. Inventory Asset (1200) &rarr; Cr. Accounts Payable ({apAccount?.code})
           </div>
-
+          <div>
+            <label className="block text-xs font-medium mb-1">Description</label>
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Goods received on credit, Purchase invoice..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+          </div>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
-            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-              {saving ? 'Saving...' : 'Record Payment'}
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Record'}
             </button>
           </div>
         </form>
@@ -1270,98 +958,59 @@ function RecordReceivablePaymentModal({
   );
 }
 
-function RecordPayablePaymentModal({
-  payable,
-  accounts,
-  onClose,
-  onSaved
-}: {
-  payable: ManualReceivablePayable;
-  accounts: Account[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({
-    amount: payable.outstanding_balance,
-    payment_date: new Date().toISOString().split('T')[0],
-    payment_method: 'cash',
-    account_id: '',
-    reference_number: '',
-    notes: '',
-  });
+function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }: { receivable: ManualReceivablePayable; accounts: Account[]; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ amount: receivable.outstanding_balance, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const apAccount = accounts.find(a => a.code === '2000');
-  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
+  const arAccount = accounts.find(a => a.code === '1100');
+  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
-    if (!form.account_id || form.amount <= 0) {
-      setError('Please select a cash/bank account and enter a valid amount');
-      return;
-    }
-
-    if (form.amount > payable.outstanding_balance) {
-      setError(`Amount cannot exceed outstanding balance (${formatCurrency(payable.outstanding_balance)})`);
-      return;
-    }
+    if (!form.account_id || form.amount <= 0) { setError('Please select a cash/bank account and enter a valid amount'); return; }
+    if (form.amount > receivable.outstanding_balance) { setError(`Amount cannot exceed outstanding balance (${formatCurrency(receivable.outstanding_balance)})`); return; }
 
     setSaving(true);
-
     try {
-      const paymentNumber = `PAY-${Date.now().toString().slice(-6)}`;
       const amount = form.amount;
-      const desc = form.notes || `Payment made for ${payable.entry_number}`;
+      const desc = form.notes || `Payment received for ${receivable.entry_number}`;
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
 
-      // 1. Create payment record
       const { error: payError } = await supabase.from('payments').insert({
-        payment_number: paymentNumber,
-        payment_type: 'made',
-        reference_type: 'payable',
-        reference_id: payable.id,
-        amount: amount,
+        payment_number: `PAY-${Date.now().toString().slice(-6)}`,
+        payment_type: 'received',
+        reference_type: 'receivable',
+        reference_id: receivable.id,
+        amount,
         payment_method: form.payment_method,
         payment_date: form.payment_date,
         reference_number: form.reference_number || null,
         notes: form.notes || null,
       });
-
       if (payError) throw payError;
 
-      // 2. Create journal entry: DR Accounts Payable, CR Cash/Bank
-      const entryNumber = `JE-${Date.now().toString().slice(-6)}`;
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber,
-          entry_date: form.payment_date,
-          description: desc,
-          reference_type: 'payment',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-        })
-        .select()
-        .single();
-
+      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+        entry_date: form.payment_date,
+        description: desc,
+        reference_type: 'payment',
+        total_debit: amount,
+        total_credit: amount,
+        is_posted: true,
+      }).select().single();
       if (entryError) throw entryError;
 
-      if (!apAccount) throw new Error('Accounts Payable account not found');
-
+      if (!arAccount) throw new Error('Accounts Receivable account not found');
       await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: 0, credit: amount, sort_order: 1 },
+        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+        { journal_entry_id: entry.id, account_id: arAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // 3. Update account balances
-      const cashAccount = accounts.find(a => a.id === form.account_id);
-      if (cashAccount) {
-        await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) - amount }).eq('id', form.account_id);
-      }
-      await supabase.from('accounts').update({ balance: (apAccount.balance || 0) - amount }).eq('id', apAccount.id);
+      // Atomic balance updates
+      await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: amount });
+      await supabase.rpc('increment_account_balance', { p_account_id: arAccount.id, p_delta: -amount });
 
       toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
       onSaved();
@@ -1377,63 +1026,151 @@ function RecordPayablePaymentModal({
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <h2 className="text-base font-bold flex items-center gap-2">
-            <HandCoins className="w-4 h-4 text-amber-600" />
-            Pay Payable
-          </h2>
+          <h2 className="text-base font-bold flex items-center gap-2"><HandCoins className="w-4 h-4 text-green-600" />Collect Receivable Payment</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
           <div className="bg-muted/30 rounded-lg p-3 space-y-1">
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Payable:</span>
-              <span className="font-mono">{payable.entry_number}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Party:</span>
-              <span className="font-medium">{payable.party_name}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Outstanding:</span>
-              <span className="font-bold text-amber-600">{formatCurrency(payable.outstanding_balance)}</span>
-            </div>
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Receivable:</span><span className="font-mono">{receivable.entry_number}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Party:</span><span className="font-medium">{receivable.party_name}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Outstanding:</span><span className="font-bold text-red-600">{formatCurrency(receivable.outstanding_balance)}</span></div>
           </div>
-
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input
-                type="number"
-                required
-                min="0.01"
-                max={payable.outstanding_balance}
-                step="0.01"
-                value={form.amount}
-                onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              />
+              <input type="number" required min="0.01" max={receivable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>
-              <input
-                type="date"
-                value={form.payment_date}
-                onChange={e => setForm({ ...form, payment_date: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              />
+              <input type="date" value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
           </div>
-
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Method</label>
-              <select
-                value={form.payment_method}
-                onChange={e => setForm({ ...form, payment_method: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              >
+              <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="card">Card</option>
+                <option value="cheque">Cheque</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Receive Into *</label>
+              <select required value={form.account_id} onChange={e => setForm({ ...form, account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+                <option value="">Select account</option>
+                {cashBankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Reference / Notes</label>
+            <input value={form.reference_number} onChange={e => setForm({ ...form, reference_number: e.target.value })} placeholder="Cheque no., Transaction ID..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">Dr. Cash/Bank &rarr; Cr. Accounts Receivable (1100)</div>
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Saving...' : 'Record Payment'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { payable: ManualReceivablePayable; accounts: Account[]; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ amount: payable.outstanding_balance, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const apAccount = accounts.find(a => a.code === '2000');
+  const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    if (!form.account_id || form.amount <= 0) { setError('Please select a cash/bank account and enter a valid amount'); return; }
+    if (form.amount > payable.outstanding_balance) { setError(`Amount cannot exceed outstanding balance (${formatCurrency(payable.outstanding_balance)})`); return; }
+
+    setSaving(true);
+    try {
+      const amount = form.amount;
+      const desc = form.notes || `Payment made for ${payable.entry_number}`;
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
+
+      const { error: payError } = await supabase.from('payments').insert({
+        payment_number: `PAY-${Date.now().toString().slice(-6)}`,
+        payment_type: 'made',
+        reference_type: 'payable',
+        reference_id: payable.id,
+        amount,
+        payment_method: form.payment_method,
+        payment_date: form.payment_date,
+        reference_number: form.reference_number || null,
+        notes: form.notes || null,
+      });
+      if (payError) throw payError;
+
+      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+        entry_date: form.payment_date,
+        description: desc,
+        reference_type: 'payment',
+        total_debit: amount,
+        total_credit: amount,
+        is_posted: true,
+      }).select().single();
+      if (entryError) throw entryError;
+
+      if (!apAccount) throw new Error('Accounts Payable account not found');
+      await supabase.from('journal_lines').insert([
+        { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: 0, credit: amount, sort_order: 1 },
+      ]);
+
+      // Atomic balance updates
+      await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: -amount });
+      await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: -amount });
+
+      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record payment');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold flex items-center gap-2"><HandCoins className="w-4 h-4 text-amber-600" />Pay Payable</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div className="bg-muted/30 rounded-lg p-3 space-y-1">
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Payable:</span><span className="font-mono">{payable.entry_number}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Party:</span><span className="font-medium">{payable.party_name}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">Outstanding:</span><span className="font-bold text-amber-600">{formatCurrency(payable.outstanding_balance)}</span></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input type="number" required min="0.01" max={payable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Date</label>
+              <input type="date" value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Method</label>
+              <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
                 <option value="cash">Cash</option>
                 <option value="bank_transfer">Bank Transfer</option>
                 <option value="card">Card</option>
@@ -1442,39 +1179,20 @@ function RecordPayablePaymentModal({
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Pay From *</label>
-              <select
-                required
-                value={form.account_id}
-                onChange={e => setForm({ ...form, account_id: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-              >
+              <select required value={form.account_id} onChange={e => setForm({ ...form, account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
                 <option value="">Select account</option>
-                {cashBankAccounts.map(a => (
-                  <option key={a.id} value={a.id}>{a.code} - {a.name}</option>
-                ))}
+                {cashBankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
               </select>
             </div>
           </div>
-
           <div>
-            <label className="block text-xs font-medium mb-1">Reference Number</label>
-            <input
-              value={form.reference_number}
-              onChange={e => setForm({ ...form, reference_number: e.target.value })}
-              placeholder="Cheque no., Transaction ID..."
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-            />
+            <label className="block text-xs font-medium mb-1">Reference / Notes</label>
+            <input value={form.reference_number} onChange={e => setForm({ ...form, reference_number: e.target.value })} placeholder="Cheque no., Transaction ID..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
           </div>
-
-          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-            Dr. Accounts Payable (2000) &rarr; Cr. Cash/Bank
-          </div>
-
+          <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">Dr. Accounts Payable (2000) &rarr; Cr. Cash/Bank</div>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
-            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-              {saving ? 'Saving...' : 'Record Payment'}
-            </button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Saving...' : 'Record Payment'}</button>
           </div>
         </form>
       </div>

@@ -752,7 +752,8 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
 
   const invoiceStatus =
     form.payment_type === 'full' ? 'paid' :
-    form.payment_type === 'partial' && effectiveAmountPaid > 0 ? 'partial' :
+    form.payment_type === 'partial' && effectiveAmountPaid > 0 ? 'partially_paid' :
+    form.payment_type === 'credit' ? 'sent' :
     'draft';
 
   async function handleConvert(e: React.FormEvent) {
