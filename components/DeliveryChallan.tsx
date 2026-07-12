@@ -64,13 +64,17 @@ export default function DeliveryChallan({
           body * { visibility: hidden !important; }
           .print-document, .print-document * { visibility: visible !important; }
           .print-document {
-            position: fixed !important;
+            position: absolute !important;
             top: 0 !important; left: 0 !important;
             width: 100% !important; max-width: 100% !important;
             margin: 0 !important;
             border: none !important; border-radius: 0 !important;
             box-shadow: none !important;
+            overflow: visible !important;
           }
+          .print-items-table { page-break-inside: auto; }
+          .print-items-table tr { page-break-inside: avoid; page-break-after: auto; }
+          .print-footer-section { page-break-inside: avoid; }
         }
       `}</style>
 
@@ -305,7 +309,7 @@ export default function DeliveryChallan({
         </div>
 
         {/* ═══════════════════ ITEMS TABLE ═══════════════════ */}
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table className="print-items-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: PRIMARY, color: '#fff' }}>
               {[
@@ -403,6 +407,7 @@ export default function DeliveryChallan({
 
         {/* ═══════════════════ SIGNATURES ═══════════════════ */}
         <div
+          className="print-footer-section"
           style={{
             borderTop: `2px solid ${PRIMARY}`,
             display: 'grid',

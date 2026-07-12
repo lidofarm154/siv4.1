@@ -792,7 +792,9 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
       return;
     }
 
-    const invoiceNumber = `INV-${Date.now().toString().slice(-6)}`;
+    const { data: invoiceNum, error: numError } = await supabase.rpc('generate_invoice_number');
+    if (numError) { setError('Failed to generate invoice number: ' + numError.message); setSaving(false); return; }
+    const invoiceNumber = invoiceNum as string;
 
     const { data: invoice, error: invError } = await supabase
       .from('invoices')

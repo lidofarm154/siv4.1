@@ -154,7 +154,7 @@ export default function PrintTemplate({
           body * { visibility: hidden !important; }
           .print-document, .print-document * { visibility: visible !important; }
           .print-document {
-            position: fixed !important;
+            position: absolute !important;
             top: 0 !important;
             left: 0 !important;
             width: 100% !important;
@@ -163,6 +163,20 @@ export default function PrintTemplate({
             border: none !important;
             border-radius: 0 !important;
             box-shadow: none !important;
+            overflow: visible !important;
+          }
+          .print-no-break {
+            page-break-inside: avoid;
+          }
+          .print-items-table {
+            page-break-inside: auto;
+          }
+          .print-items-table tr {
+            page-break-inside: avoid;
+            page-break-after: auto;
+          }
+          .print-footer-section {
+            page-break-inside: avoid;
           }
         }
       `}</style>
@@ -458,7 +472,7 @@ export default function PrintTemplate({
         </div>
 
         {/* ═══════════════════ ITEMS TABLE ═══════════════════ */}
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table className="print-items-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: PRIMARY, color: '#fff' }}>
               {[
@@ -608,6 +622,7 @@ export default function PrintTemplate({
 
         {/* ═══════════════════ TERMS / THANK YOU / SIGNATURES ═══════════════════ */}
         <div
+          className="print-footer-section"
           style={{
             borderTop: `2px solid ${PRIMARY}`,
             display: 'grid',
