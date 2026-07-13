@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw } from 'lucide-react';
+import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 
@@ -18,13 +18,38 @@ const typeConfig: Record<CustomerType, { label: string; color: string; icon: Rea
   government: { label: 'Government', color: 'bg-teal-100 text-teal-700', icon: Building2 },
 };
 
+type CustomerWithOutstanding = Customer & {
+  invoice_outstanding: number;
+  manual_outstanding: number;
+  return_count: number;
+  return_total: number;
+  total_purchases_calc: number;
+};
+
+const PERIODS = [
+  { value: '', label: 'All Time' },
+  { value: '7', label: 'Last 7 Days' },
+  { value: '30', label: 'Last 30 Days' },
+  { value: '90', label: 'Last 90 Days' },
+  { value: '365', label: 'This Year' },
+];
+
 export default function CRMPage() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [customerReturns, setCustomerReturns] = useState<Record<string, { count: number; total: number }>>({});
-  const [customerPurchases, setCustomerPurchases] = useState<Record<string, number>>({});
+  const [customers, setCustomers] = useState<CustomerWithOutstanding[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showFilters, setShowFilters] = useState(false);
+
+  // Filter state
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
+  const [filterCity, setFilterCity] = useState('');
+  const [filterPeriod, setFilterPeriod] = useState('');
+  const [filterOutstandingType, setFilterOutstandingType] = useState<'' | 'invoice' | 'manual'>('');
+  const [outstandingMin, setOutstandingMin] = useState('');
+  const [outstandingMax, setOutstandingMax] = useState('');
+  const [creditMin, setCreditMin] = useState('');
+  const [creditMax, setCreditMax] = useState('');
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deletingCustomer, setDeletingCustomer] = useState<Customer | null>(null);
@@ -34,40 +59,110 @@ export default function CRMPage() {
 
   async function loadData() {
     setLoading(true);
-    const [{ data }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
+    const [{ data: custData }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
       supabase.from('customers').select('*').order('name'),
-      supabase.from('invoices').select('customer_id, total_amount, status').neq('status', 'cancelled'),
-      supabase.from('sales_returns').select('customer_id, total_refund_amount'),
+      supabase.from('invoices')
+        .select('customer_id, total_amount, balance_due, status, invoice_date')
+        .neq('status', 'cancelled'),
+      supabase.from('sales_returns').select('customer_id, total_refund_amount, created_at'),
     ]);
 
-    // Build purchases map from actual invoices
+    // Build invoice outstanding map (unpaid balance from invoices)
+    const invoiceOutstandingMap: Record<string, number> = {};
     const purchasesMap: Record<string, number> = {};
-    (invoiceData || []).forEach(inv => {
+    (invoiceData || []).forEach((inv: any) => {
       if (!inv.customer_id) return;
       purchasesMap[inv.customer_id] = (purchasesMap[inv.customer_id] || 0) + Number(inv.total_amount);
+      if (['sent', 'partially_paid'].includes(inv.status)) {
+        invoiceOutstandingMap[inv.customer_id] = (invoiceOutstandingMap[inv.customer_id] || 0) + Number(inv.balance_due || 0);
+      }
     });
-    setCustomerPurchases(purchasesMap);
 
-    setCustomers(data || []);
+    // Returns map
     const returnsMap: Record<string, { count: number; total: number }> = {};
-    (returnsData || []).forEach(r => {
+    (returnsData || []).forEach((r: any) => {
       if (!r.customer_id) return;
       if (!returnsMap[r.customer_id]) returnsMap[r.customer_id] = { count: 0, total: 0 };
       returnsMap[r.customer_id].count++;
       returnsMap[r.customer_id].total += Number(r.total_refund_amount) || 0;
     });
-    setCustomerReturns(returnsMap);
+
+    const enriched: CustomerWithOutstanding[] = (custData || []).map((c: Customer) => {
+      const invOut = invoiceOutstandingMap[c.id] || 0;
+      const totalOut = Number(c.outstanding_balance) || 0;
+      const manualOut = Math.max(0, totalOut - invOut);
+      return {
+        ...c,
+        invoice_outstanding: invOut,
+        manual_outstanding: manualOut,
+        return_count: returnsMap[c.id]?.count || 0,
+        return_total: returnsMap[c.id]?.total || 0,
+        total_purchases_calc: purchasesMap[c.id] || 0,
+      };
+    });
+
+    setCustomers(enriched);
+
     const totalRev = Object.values(purchasesMap).reduce((s, v) => s + v, 0);
-    const totalOut = (data || []).reduce((s: number, c: Customer) => s + c.outstanding_balance, 0);
-    const totalRef = (returnsData || []).reduce((s: number, r) => s + (Number(r.total_refund_amount) || 0), 0);
-    setStats({ total: data?.length || 0, totalRevenue: totalRev, outstanding: totalOut, active: data?.filter((c: Customer) => c.is_active).length || 0, totalRefunds: totalRef });
+    const totalOut = (custData || []).reduce((s: number, c: Customer) => s + Number(c.outstanding_balance), 0);
+    const totalRef = Object.values(returnsMap).reduce((s, v) => s + v.total, 0);
+    setStats({
+      total: custData?.length || 0,
+      totalRevenue: totalRev,
+      outstanding: totalOut,
+      active: (custData || []).filter((c: Customer) => c.is_active).length,
+      totalRefunds: totalRef,
+    });
     setLoading(false);
   }
 
-  const filtered = customers.filter(c =>
-    (!search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.phone || '').includes(search)) &&
-    (!filterType || c.type === filterType)
-  );
+  // Unique cities for filter dropdown
+  const cities = useMemo(() => {
+    const set = new Set(customers.map(c => c.city).filter(Boolean) as string[]);
+    return Array.from(set).sort();
+  }, [customers]);
+
+  // Period cutoff date
+  const periodCutoff = useMemo(() => {
+    if (!filterPeriod) return null;
+    const d = new Date();
+    d.setDate(d.getDate() - Number(filterPeriod));
+    return d.toISOString();
+  }, [filterPeriod]);
+
+  const filtered = useMemo(() => {
+    return customers.filter(c => {
+      // Text search: name, phone, email, city, code
+      if (search) {
+        const s = search.toLowerCase();
+        const matches = c.name.toLowerCase().includes(s) ||
+          (c.phone || '').includes(s) ||
+          (c.email || '').toLowerCase().includes(s) ||
+          (c.city || '').toLowerCase().includes(s) ||
+          (c.code || '').toLowerCase().includes(s);
+        if (!matches) return false;
+      }
+      if (filterType && c.type !== filterType) return false;
+      if (filterCity && c.city !== filterCity) return false;
+
+      // Outstanding type filter
+      const outstandingVal = filterOutstandingType === 'invoice'
+        ? c.invoice_outstanding
+        : filterOutstandingType === 'manual'
+          ? c.manual_outstanding
+          : Number(c.outstanding_balance);
+      if (outstandingMin && outstandingVal < Number(outstandingMin)) return false;
+      if (outstandingMax && outstandingVal > Number(outstandingMax)) return false;
+
+      // Credit limit range
+      if (creditMin && Number(c.credit_limit) < Number(creditMin)) return false;
+      if (creditMax && Number(c.credit_limit) > Number(creditMax)) return false;
+
+      return true;
+    });
+  }, [customers, search, filterType, filterCity, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax, periodCutoff]);
+
+  const activeFilterCount = [filterType, filterCity, filterPeriod, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax].filter(Boolean).length;
 
   async function handleDelete() {
     if (!deletingCustomer) return;
@@ -79,6 +174,12 @@ export default function CRMPage() {
       loadData();
     }
     setDeletingCustomer(null);
+  }
+
+  function clearFilters() {
+    setFilterType(''); setFilterCity(''); setFilterPeriod('');
+    setFilterOutstandingType(''); setOutstandingMin(''); setOutstandingMax('');
+    setCreditMin(''); setCreditMax('');
   }
 
   return (
@@ -93,13 +194,14 @@ export default function CRMPage() {
         </button>
       </div>
 
+      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
           { label: 'Total Customers', value: stats.total, color: 'text-blue-500' },
           { label: 'Active', value: stats.active, color: 'text-green-500' },
-          { label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), color: 'text-purple-500' },
+          { label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), color: 'text-slate-600' },
+          { label: 'Total Outstanding', value: formatCurrency(stats.outstanding), color: 'text-red-500' },
           { label: 'Total Refunds', value: formatCurrency(stats.totalRefunds), color: 'text-orange-500' },
-          { label: 'Net Revenue', value: formatCurrency(stats.totalRevenue - stats.totalRefunds), color: 'text-teal-500' },
         ].map(s => (
           <div key={s.label} className="stat-card">
             <p className="text-xs text-muted-foreground">{s.label}</p>
@@ -108,17 +210,112 @@ export default function CRMPage() {
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customers..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+      {/* Search + Filter Bar */}
+      <div className="bg-white rounded-xl border border-border shadow-sm">
+        <div className="flex flex-wrap gap-3 p-4 border-b border-border">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by name, phone, email, city, code..."
+              className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+          </div>
+          <select value={filterType} onChange={e => setFilterType(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none min-w-[130px]">
+            <option value="">All Types</option>
+            {Object.entries(typeConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          <button
+            onClick={() => setShowFilters(f => !f)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition ${showFilters || activeFilterCount > 0 ? 'bg-blue-600 text-white border-blue-600' : 'border-border hover:bg-muted'}`}
+          >
+            <Filter className="w-3.5 h-3.5" />
+            Advanced Filters
+            {activeFilterCount > 0 && <span className="bg-white text-blue-600 rounded-full w-5 h-5 text-xs flex items-center justify-center font-bold">{activeFilterCount}</span>}
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+          </button>
+          {activeFilterCount > 0 && (
+            <button onClick={clearFilters} className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1">
+              <X className="w-3 h-3" />Clear filters
+            </button>
+          )}
         </div>
-        <select value={filterType} onChange={e => setFilterType(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
-          <option value="">All Types</option>
-          {Object.entries(typeConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
+
+        {/* Advanced Filters Panel */}
+        {showFilters && (
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 bg-gray-50 border-b border-border">
+            {/* City */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">City</label>
+              <select value={filterCity} onChange={e => setFilterCity(e.target.value)} className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none">
+                <option value="">All Cities</option>
+                {cities.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+
+            {/* Period */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Customer Since</label>
+              <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)} className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none">
+                {PERIODS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+
+            {/* Outstanding Type */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Outstanding Type</label>
+              <select value={filterOutstandingType} onChange={e => setFilterOutstandingType(e.target.value as '' | 'invoice' | 'manual')} className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none">
+                <option value="">Total Outstanding</option>
+                <option value="invoice">Invoice Outstanding</option>
+                <option value="manual">Manual Outstanding</option>
+              </select>
+            </div>
+
+            {/* Outstanding Range */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Outstanding Range{filterOutstandingType === 'invoice' ? ' (Invoice)' : filterOutstandingType === 'manual' ? ' (Manual)' : ''}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="number" min="0" value={outstandingMin}
+                  onChange={e => setOutstandingMin(e.target.value)}
+                  placeholder="Min"
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                />
+                <input
+                  type="number" min="0" value={outstandingMax}
+                  onChange={e => setOutstandingMax(e.target.value)}
+                  placeholder="Max"
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Credit Limit Range */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Credit Limit Range</label>
+              <div className="flex gap-2">
+                <input
+                  type="number" min="0" value={creditMin}
+                  onChange={e => setCreditMin(e.target.value)}
+                  placeholder="Min"
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                />
+                <input
+                  type="number" min="0" value={creditMax}
+                  onChange={e => setCreditMax(e.target.value)}
+                  placeholder="Max"
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Table */}
       <div className="table-wrapper">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -130,22 +327,20 @@ export default function CRMPage() {
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">City</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total Purchases</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Returns</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net Purchases</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Outstanding</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Invoice Due</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Manual Due</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total Outstanding</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit Limit</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}>{Array.from({ length: 10 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
+                <tr key={i}>{Array.from({ length: 11 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : filtered.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground text-sm">No customers found</td></tr>
+                <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground text-sm">No customers found</td></tr>
               ) : filtered.map(c => {
                 const cfg = typeConfig[c.type] || typeConfig.retail;
-                const returns = customerReturns[c.id] || { count: 0, total: 0 };
-                const totalPurchases = customerPurchases[c.id] || 0;
-                const netPurchases = totalPurchases - returns.total;
                 return (
                   <tr key={c.id} className={`hover:bg-muted/30 transition-colors ${!c.is_active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
@@ -165,18 +360,27 @@ export default function CRMPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-foreground">{c.city || '-'}</td>
-                    <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(totalPurchases)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(c.total_purchases_calc)}</td>
                     <td className="px-4 py-3 text-right">
-                      {returns.count > 0 ? (
+                      {c.return_count > 0 ? (
                         <div className="flex items-center justify-end gap-1">
                           <RotateCcw className="w-3 h-3 text-orange-500" />
-                          <span className="text-xs text-orange-600">{returns.count}</span>
-                          <span className="text-xs text-muted-foreground">({formatCurrency(returns.total)})</span>
+                          <span className="text-xs text-orange-600">{c.return_count}</span>
+                          <span className="text-xs text-muted-foreground">({formatCurrency(c.return_total)})</span>
                         </div>
                       ) : <span className="text-xs text-muted-foreground">-</span>}
                     </td>
-                    <td className="px-4 py-3 text-right text-sm font-semibold text-teal-600">{formatCurrency(netPurchases)}</td>
-                    <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{c.outstanding_balance > 0 ? formatCurrency(c.outstanding_balance) : '-'}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-amber-600">
+                      {c.invoice_outstanding > 0 ? formatCurrency(c.invoice_outstanding) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-purple-600">
+                      {c.manual_outstanding > 0 ? formatCurrency(c.manual_outstanding) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {Number(c.outstanding_balance) > 0 ? (
+                        <span className="text-sm font-bold text-red-600">{formatCurrency(Number(c.outstanding_balance))}</span>
+                      ) : <span className="text-xs text-muted-foreground">-</span>}
+                    </td>
                     <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(c.credit_limit)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -192,7 +396,7 @@ export default function CRMPage() {
           </table>
         </div>
         <div className="px-4 py-3 border-t border-border">
-          <p className="text-xs text-muted-foreground">{filtered.length} customers</p>
+          <p className="text-xs text-muted-foreground">{filtered.length} of {customers.length} customers</p>
         </div>
       </div>
 

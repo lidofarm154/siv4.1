@@ -59,7 +59,7 @@ export default function ReportsPage() {
       supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, product:products(name, cost_price)').gte('created_at', effectiveStart).lte('created_at', effectiveEnd || undefined).order('quantity', { ascending: false }).limit(50),
       supabase.from('customers').select('name, total_purchases').order('total_purchases', { ascending: false }).limit(10),
       supabase.from('payments').select('amount').eq('payment_type', 'received').gte('payment_date', effectiveStart).lte('payment_date', effectiveEnd || undefined),
-      supabase.from('accounts').select('id, name').eq('is_active', true),
+      supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true),
     ]);
 
     const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);

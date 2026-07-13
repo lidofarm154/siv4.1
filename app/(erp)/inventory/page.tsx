@@ -1086,7 +1086,8 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
               </div>
               <div className="space-y-2">
                 {warehouses.map(wh => {
-                  const currentQty = product?.stock_by_warehouse?.find(s => s.warehouse_id === wh.id)?.quantity || 0;
+                  // Use originalStockRef (fresh from DB) for current qty, not stale product prop
+                  const currentQty = originalStockRef.current[wh.id] ?? 0;
                   const newQty = Number(stockByWarehouse[wh.id] || 0);
                   const diff = newQty - currentQty;
                   return (
