@@ -157,7 +157,7 @@ export default function PrintTemplate({
            position: static !important;
             top: 0 !important;
             left: 0 !important;
-            width: 100% !important;
+            width: 210mm;
             max-width: 100% !important;
            margin: 0 auto;
             border: none !important;
