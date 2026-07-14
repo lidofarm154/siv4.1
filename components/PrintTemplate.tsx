@@ -154,12 +154,12 @@ export default function PrintTemplate({
           body * { visibility: hidden !important; }
           .print-document, .print-document * { visibility: visible !important; }
           .print-document {
-            position: absolute !important;
+           position: static !important;
             top: 0 !important;
             left: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
-            margin: 0 !important;
+           margin: 0 auto;
             border: none !important;
             border-radius: 0 !important;
             box-shadow: none !important;
